@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.verify/
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.local
+vite.config.ts.timestamp-*

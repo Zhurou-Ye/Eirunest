@@ -1,0 +1,27 @@
+{
+  "name": "hearth-boy",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "少年 AI 同居养成 · 原型",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host",
+    "typecheck": "tsc --noEmit",
+    "test": "node test/guard.test.mjs",
+    "fetch-models": "node scripts/fetch-live2d-models.mjs"
+  },
+  "devDependencies": {
+    "@esbuild/win32-x64": "0.21.5",
+    "@rollup/rollup-win32-x64-msvc": "^4.64.6",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  },
+  "dependencies": {
+    "@tencent-ai/workbuddy-cloud-sdk": "^0.1.3-dev.c090db7.202610050023",
+    "live2dcubismcore": "^1.0.2",
+    "pixi-live2d-display": "^0.4.0",
+    "pixi.js": "^7.4.2"
+  }
+}
