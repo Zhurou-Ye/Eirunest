@@ -6,6 +6,8 @@
  * 以后接真 TTS 服务时只替换 speak() 内部即可。
  */
 
+import type { Gender } from '../core/types';
+
 export interface VoiceOptions {
   /** 语速 0.1~10 */
   rate: number;
@@ -30,6 +32,10 @@ const PRESET_PITCH: Record<string, number> = {
   cool: 0.9,
   clingy: 1.3,
 };
+
+/** 挑音色时用来匹配名字的关键词。各平台命名不统一，只能模糊匹配。 */
+const FEMALE_HINTS = /female|女|晓|雅|莹|婷|mei|xiaoxiao|huihui|xiaoyi/i;
+const MALE_HINTS = /male|男|云|阳|康|博|yang|yunxi|yunjian|kangkang|liang|zhiyu/i;
 
 class Voice {
   private opts: VoiceOptions = { ...DEFAULTS };
@@ -75,8 +81,11 @@ class Voice {
    * 说一句话。
    * @param text 台词
    * @param preset 性格预设，用来选音高
+   * @param gender 角色性别。必须传，否则男性角色会拿到女声 ——
+   *               浏览器语音库里中文本地音色基本只有女声一档，
+   *               不按性别挑就会全员同一个声音。
    */
-  speak(text: string, preset?: string): void {
+  speak(text: string, preset?: string, gender: Gender = 'female'): void {
     if (!this.available || !this.opts.enabled) return;
     this.stop();
 
@@ -87,20 +96,19 @@ class Voice {
       const u = new SpeechSynthesisUtterance(clean);
       u.lang = 'zh-CN';
       u.rate = this.opts.rate;
-      u.pitch = (preset && PRESET_PITCH[preset]) || this.opts.pitch;
+      const basePitch = (preset && PRESET_PITCH[preset]) || this.opts.pitch;
+      // 男性角色整体压低一档，和音色选择一起生效
+      u.pitch = Math.max(0.1, Math.min(2, gender === 'male' ? basePitch * 0.78 : basePitch));
       u.volume = this.opts.volume;
 
-      // 优先挑中文女声/少年声，各平台命名不统一，只能模糊匹配
+      // 先挑中文音色，再按性别挑；挑不到就退回第一个中文音色，
+      // 至少保证是中文发音，不会冒出英文腔。
       const zh = this.voices.filter(
         (v) => v.lang.toLowerCase().startsWith('zh') || /chinese|中文|普通话/i.test(v.name),
       );
-      if (zh.length > 0) {
-        // 名字里带 female/女/晓/雅的更像女声
-        const preferred =
-          zh.find((v) => /female|女|晓|雅|莹|婷|mei|xiaoxiao|huihui/i.test(v.name)) ?? zh[0];
-        u.voice = preferred;
-      }
-
+      const hints = gender === 'male' ? MALE_HINTS : FEMALE_HINTS;
+      const preferred = zh.find((v) => hints.test(v.name)) ?? zh[0];
+      if (preferred) u.voice = preferred;
 
       window.speechSynthesis.speak(u);
     } catch (err) {
