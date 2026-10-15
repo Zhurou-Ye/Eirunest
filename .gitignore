@@ -3,8 +3,16 @@ dist/
 .verify/
 *.log
 .DS_Store
-Thumbs.db
-.vscode/
-.idea/
-*.local
-vite.config.ts.timestamp-*
+
+# 构建与测试产物
+.wb-build*/
+.vite/
+test/screenshots/
+vite.config.ts.timestamp-*.mjs
+
+# 工作稿与本地数据，不随仓库发布
+docs/STORY-DESIGN.md
+docs/IDEAS.md
+today.txt
+.workbuddy/
+*.genie
