@@ -1,18 +1,13 @@
 /**
- * 云服务公开配置。
+ * 云服务公开配置（来自 cloud-service 激活结果）。
  *
- * 留空即可 —— 此时所有对话、日记、朋友圈评论都会自动走**离线兜底**，
- * 而日程、手机、触摸、商城等功能本来就不依赖大模型。
+ * 这两个值都是**可公开**的：endpoint 是本应用的发布域数据面地址，
+ * publishableKey 只用来标识"哪个应用"，本身不带权限（服务端还会校验 Origin）。
+ * 它们会随前端代码一起发到浏览器，所以放在源码里没问题；但不要写进日志。
  *
- * 想开"免密钥大模型"，把你自己的云服务配置填进来：
- *   - endpoint：你的应用发布域数据面地址
- *   - publishableKey：用来标识"哪个应用"的公开 key（本身不带权限）
- * 这两个值会随前端代码发到浏览器，所以放源码里没问题；但不要写进日志。
- *
- * 也可以完全不填这里，改为运行后在「设置」面板填任意 OpenAI 兼容接口的
- * baseUrl / apiKey / model（配置只存在浏览器本地）。
+ * 真正的免密钥大模型调用由 cloud.llm 处理，前端不持有任何模型服务的密钥。
  */
 export const CLOUD_CONFIG = {
-  endpoint: '',
-  publishableKey: '',
+  endpoint: 'https://hearth-room.app.workbuddy.host',
+  publishableKey: 'wbpk_hJ7RgIZjWLvnDA3MXc1v3k_w9l72Vg335ydb68Aq37McnEoIg2KlTDP',
 } as const;
