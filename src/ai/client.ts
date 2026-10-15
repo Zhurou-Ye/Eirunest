@@ -11,6 +11,15 @@ import { CLOUD_CONFIG } from '../cloud.config';
 import { extractJson, sanitizeIntent, type SafeIntent } from './mapping';
 import { ACTIVITY_CN, buildContext, buildMessages, MOOD_CN } from './prompt';
 import { offlineDiary, offlineReply } from './offline';
+import {
+  defaultNpcState,
+  fallbackLine,
+  forbiddenWords,
+  getNpc,
+  npcFacts,
+  sanitizeNpcLine,
+  type NpcSituation,
+} from '../core/npc';
 
 /**
  * 大模型适配层。优先级：
@@ -163,21 +172,15 @@ export async function requestReply(
 
         let text = '';
         let reasoning = '';
-        let chunks = 0;
         for await (const chunk of getCloud().llm.chat.completions.create(params)) {
-          chunks++;
           const delta = chunk.choices[0]?.delta;
           if (delta?.content) text += delta.content;
           if (delta?.reasoning_content) reasoning += delta.reasoning_content;
         }
-        // 调试：把原始返回暴露出来，便于排查"接通但空内容"
-        if (typeof window !== 'undefined') {
-          (window as unknown as { __llmLast?: unknown }).__llmLast = {
-            model: model.id,
-            chunks,
-            raw: text,
-            reasoning: reasoning.slice(0, 200),
-          };
+        // 推理模型偶尔会把 token 全烧在思考上，导致没有可见内容——此时退回下一级
+        if (!text.trim()) {
+          if (reasoning) console.warn('[llm] 云端只返回了思考内容，没有可见回复');
+          throw new Error('empty completion');
         }
         const parsed = extractJson(text);
         const fallbackText =
@@ -235,7 +238,7 @@ export async function requestDiary(
   const name = save.character.personality.name;
   const you = save.playerName;
   const sys =
-    `你是${name}，一个和「${you}」一起住的${youth(save.character.personality.gender)}。现在你在自己的日记本上写今天的一两句话。\n` +
+    `你是${name}，一个${youth(save.character.personality.gender)}，生活在另一个世界，通过手机认识了「${you}」。现在你在自己的日记本上写今天的一两句话。\n` +
     `要求：\n` +
     `1. 用你自己的第一人称（"我……"）来写；写的是——你对「${you}」的看法、今天你和 TA 之间发生了什么、你自己的心情；\n` +
     `2. 像真人在本子上随手写，口语、有点私人、偶尔带点小情绪，不要写成总结报告或旁白；\n` +
@@ -339,6 +342,142 @@ export async function requestMomentComment(
     '下次带上我。',
   ];
   return { text: offline[Math.floor(Math.random() * offline.length)], provider: 'offline' };
+}
+
+/**
+ * 让一个 NPC agent 说话。
+ *
+ * 两道门都必须过：
+ *   1. **上下文白名单** —— `npcFacts()` 只把当前阶段她"被允许知道"的事实写进 prompt；
+ *      不该知道的根本不出现，而不是写进去再求她别说。
+ *   2. **输出黑名单** —— `sanitizeNpcLine()` 检查模型给的那句话，
+ *      命中禁词就整句丢掉换成兜底台词（半句话比不说更可疑）。
+ *
+ * 所以这个函数**永远不会**漏出剧透，哪怕模型今天格外不听话。
+ */
+export async function requestNpcLine(
+  save: SaveData,
+  npcId: string,
+  situation: NpcSituation,
+  situationText: string,
+  signal?: AbortSignal,
+): Promise<{ text: string; provider: ReplyProvider; repaired: string[] }> {
+  const def = getNpc(npcId);
+  if (!def) return { text: '', provider: 'offline', repaired: ['没有这个 NPC'] };
+
+  const state = save.npcs?.[npcId] ?? defaultNpcState(npcId);
+  const facts = npcFacts(save, state);
+  const forbidden = forbiddenWords({ story: save.story, npc: state });
+
+  const sys =
+    `${def.persona}\n` +
+    `你的口癖（可以自然地用，但别硬塞）：${def.catchphrases.join(' / ')}\n` +
+    `你知道的事：\n${facts.map((f) => `- ${f}`).join('\n')}\n` +
+    `铁律：\n` +
+    `1. 只输出你要说的那一句台词，不要解释、不要引号、不要括号里的动作描写。\n` +
+    `2. 用中文口语，短，1 句，不超过 30 字。\n` +
+    `3. 不要把"你知道的事"直接倒出来——你只给方向，不给答案。\n` +
+    `4. 绝不主动提起你还没打算说的事。`;
+  const user = situationText;
+
+  if (cloudConfigured()) {
+    try {
+      const model = await resolveCloudModel(signal);
+      if (model) {
+        const params: ChatCompletionCreateParamsStreaming = {
+          model: model.id,
+          messages: [
+            { role: 'system', content: sys },
+            { role: 'user', content: user },
+          ] as unknown as ChatCompletionCreateParamsStreaming['messages'],
+          stream: true,
+          temperature: 1,
+          max_tokens: 120,
+          signal,
+        };
+        if (model.supportsReasoning === true) params.reasoning_effort = 'minimal';
+        let text = '';
+        for await (const chunk of getCloud().llm.chat.completions.create(params)) {
+          const d = chunk.choices[0]?.delta?.content;
+          if (d) text += d;
+        }
+        const r = sanitizeNpcLine(text.replace(/["“”「」]/g, ''), forbidden);
+        if (r.safe) return { text: r.line, provider: 'cloud', repaired: r.repaired };
+        // 被门控挡下 → 不用模型这句，走兜底
+        console.warn(`[npc] 台词被门控挡下：${r.repaired.join('、')}`);
+        return { text: fallbackLine(def, situation), provider: 'offline', repaired: r.repaired };
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') throw err;
+      console.warn('[npc] 云端失败，用兜底台词：', (err as Error).message);
+    }
+  }
+  return { text: fallbackLine(def, situation), provider: 'offline', repaired: [] };
+}
+
+/**
+ * 她主动找玩家聊天（AI 有限视角触发）。
+ * 比 requestReply 简单：不需要 IntentSchema，只输出她想说的那句话。
+ * 云端不可用时退回离线模板（"在干嘛？"）。
+ */
+export async function requestProactive(
+  save: SaveData,
+  signal?: AbortSignal,
+): Promise<string> {
+  const name = save.character.personality.name;
+  const you = save.playerName;
+  const mood = save.character.mood;
+  const affinity = Math.round(save.character.affinity);
+  const sys =
+    `你是${name}，和「${you}」有持续互动关系（关系进展值 ${affinity}），现在心情${MOOD_CN[mood] ?? ''}。\n` +
+    `你刚刷到「${you}」发的新内容（可能是朋友圈、状态、或者微信）。你想主动找 TA 说一句话。\n` +
+    `要求：\n` +
+    `1. 完全你自己的口吻：可以关心、可以调侃、可以问问题、可以分享你正在做的事；\n` +
+    `2. 口语化、短（1 句话 8~25 字），不要引号、不要表情符号、不要"我说："前缀；\n` +
+    `3. 不要解释自己的行为；\n` +
+    `4. 只输出那一句话。`;
+  const user = `现在 ${formatClock(save.clock)}，你想找「${you}」聊一下。`;
+
+  if (cloudConfigured()) {
+    try {
+      const model = await resolveCloudModel(signal);
+      if (model) {
+        const params: ChatCompletionCreateParamsStreaming = {
+          model: model.id,
+          messages: [
+            { role: 'system', content: sys },
+            { role: 'user', content: user },
+          ] as unknown as ChatCompletionCreateParamsStreaming['messages'],
+          stream: true,
+          temperature: 1.1,
+          max_tokens: 120,
+          signal,
+        };
+        if (model.supportsReasoning === true) params.reasoning_effort = 'minimal';
+        let text = '';
+        for await (const chunk of getCloud().llm.chat.completions.create(params)) {
+          const d = chunk.choices[0]?.delta?.content;
+          if (d) text += d;
+        }
+        const clean = text.replace(/["“”「」]/g, '').trim().slice(0, 60);
+        if (clean) return clean;
+      }
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') throw err;
+      console.warn('[proactive] 云端失败，用离线问候：', (err as Error).message);
+    }
+  }
+  // 离线兜底
+  const fallbacks = [
+    '在干嘛？',
+    '……喂？',
+    '今天有点想你。',
+    '你那下雪了吗？',
+    '你吃饭了没。',
+    '我刚吃完饭。',
+    '看见你发的了。',
+  ];
+  return fallbacks[Math.floor(Math.random() * fallbacks.length)];
 }
 
 /** 本地 OpenAI 兼容接口（仅在用户填了 key 时启用）。返回 null 表示未启用或失败。 */
