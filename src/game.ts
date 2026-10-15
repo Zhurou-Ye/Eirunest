@@ -4,6 +4,7 @@ import {
   ACTIVITIES,
   GIFTS,
   applyGain,
+  clampNum,
   resolveActivity,
   resolveGift,
   resolveTouch,
@@ -15,22 +16,33 @@ import type { CharacterRenderer } from './render/renderer';
 import { getAccessory, SLOT_ANCHOR } from './core/shop';
 import { pronoun } from './core/gender';
 import {
+  ALBUM_IMG,
   JOBS,
+  PLACE_STATUS,
   buildHerPlan,
   describePlan,
   getPlace,
-  herContacts,
   herOutingMessage,
   isJobOpen,
   jobHoursText,
+  personAt,
   planAt,
   placeActivityLine,
   type JobDef,
 } from './core/world';
-import type { DayPhase, PlanBlock, PlayerGender } from './core/types';
+import type { DayPhase, PlanBlock, PlayerGender, SaveData } from './core/types';
+import {
+  applyExperience,
+  effectiveStats,
+  foldOfflineIntoTraits,
+  planOfflineEvents,
+} from './core/evolution';
+import { AFFINITY_MAX } from './core/story';
+import { WITCH_ID, situationFor, type NpcSituation } from './core/npc';
 import { applyProfile, getProfile, DEFAULT_PROFILE_ID, PROFILES } from './core/profile';
 import type { CharacterProfile } from './core/profile';
-import { loadConfig, requestDiary, requestMomentComment, requestReply, saveConfig, cloudConfigured, type LlmConfig } from './ai/client';
+import { buildOpening, scheduleOpening } from './core/opening';
+import { loadConfig, requestDiary, requestMomentComment, requestNpcLine, requestReply, saveConfig, cloudConfigured, type LlmConfig } from './ai/client';
 import { reconcileAction, resolveMood } from './ai/mapping';
 import { idleGossip, timeGlance } from './ai/offline';
 import { mountUI, type UI } from './ui/hud';
@@ -80,6 +92,27 @@ export class Game {
   /** 下次评估"要不要写日记"的时间点 */
   private nextDiaryCheckAt = 0;
   private diaryPending = false;
+  /** AI 视角：她下次会主动"刷手机"的真实时间戳（real seconds）。0 = 还没决定。 */
+  private _nextCheckRealAt = 0;
+  /** AI 视角：她下次主动发消息给玩家的真实时间戳。0 = 还没决定。 */
+  private _nextProactiveMsgAt = 0;
+  /** 上次发完"她主动发我消息"的红点状态，避免重复。 */
+  private _lastProactiveClock = -1;
+  /**
+   * 她最后一次"主动找你"的真实时刻；0 = 没有悬着的主动消息。
+   * 用来判断这次主动有没有被回应 —— 被冷落会写进 traits（黏人度↑、戒备心↑）。
+   */
+  private _pendingProactiveAt = 0;
+  /** 玩家最近一次回她话的真实时刻 */
+  private lastPlayerReplyAt = 0;
+  /** 阶段 0 沉默催促：下次可催的真实时间戳 */
+  private _nextNudgeAt = 0;
+  /**
+   * 世界是否已"连上"（阶段 ≥ 1）：决定她的立绘与她的日常是否可见。
+   * 初值必须是 null 而不是 false —— 否则开局就是 false，跟阶段 0 的 false 判等，
+   * 第一帧不会去改可见性，她就会直接站在你的房间里（可阶段 0 她还隔着两个世界）。
+   */
+  private _worldLinked: boolean | null = null;
   /**
    * 写日记的"情绪契机"：只有发生了值得记的事（心情大幅波动、重要互动、被记住的对话）
    * 才会累积信号；没有契机就不写——所以不是"每天一篇"，而是"有情绪波动/有事才写"。
@@ -138,6 +171,39 @@ export class Game {
       onWriteMyDiary: (text) => this.writeMyDiary(text),
       onSaveMyPlan: (blocks) => this.saveMyPlan(blocks),
       onReadThread: (owner, contactId) => this.store.markThreadRead(owner, contactId),
+      onSetAvatar: (owner, emoji) => this.store.setAvatar(owner, emoji),
+      onSetStatus: (owner, s) => {
+        this.store.setStatus(owner, s);
+        if (owner === 'me') this.store.touchMyUpdate();
+      },
+      onAddContact: (id, remark) => {
+        const p = this.store.state.metPeople.find((x) => x.id === id);
+        if (!p) return;
+        const wasOpening = id === 'her-opening';
+        this.store.addContact(id);
+        if (remark) this.store.setContactRemark(id, remark);
+        const displayName = remark || p.name;
+        this.ui.addLog(`你把「${displayName}」加进了通讯录。`);
+        // 如果是开局的好友申请，注入固定开场白（不耗 token）
+        if (wasOpening) {
+          const lines = buildOpening(
+            this.store.state.character.personality.preset,
+            this.store.state.character.personality.gender,
+            this.store.state.character.personality.name,
+            this.store.state.playerName,
+          );
+          // 不一次性塞进会话！排好队，每隔几秒送一条进来（像她真的在打字）
+          this.store.scheduleMsgs(scheduleOpening(lines));
+          this.ui.addLog(`${this.charPronoun()}发了几条消息过来……`);
+        }
+      },
+      onShoot: (placeId) => this.shoot(placeId),
+      onBuyPhysical: () => {
+        const ok = this.store.buyPhysical();
+        if (ok) this.ui.addLog(`${this.charPronoun()}来了。`);
+        else this.ui.addLog('还差一点点……');
+        return ok;
+      },
     });
 
     // DOM 就绪后再取画布
@@ -154,12 +220,8 @@ export class Game {
     this.ui.setModelStatus(this.statusText(), false);
     this.ui.setConfig(this.config);
 
-    // 离线期间的时间已结算，提示玩家
-    if (drift > 0.5) {
-      this.ui.addLog(
-        `你离开了约 ${drift.toFixed(1)} 小时，${pronoun(this.store.state.character.personality.gender)}一直在等你。`,
-      );
-    }
+    // 离线期间：数值已经结算过了，这里把"你不在时她去过哪、留下过什么"补记回来
+    if (drift > 0.5) this.replayOfflineWorld(drift);
     this.ui.setPlayerName(this.store.state.playerName);
 
     this.ui.greet(this.store.state);
@@ -174,8 +236,7 @@ export class Game {
       this.boy.onStatusChange = (s) => this.ui.setLive2DStatus(s);
       void this.boy.load().then((ok) => {
         if (!ok) {
-          this.ui.addLog('Live2D 模型加载失败，已回退到矢量立绘。');
-          this.switchRendererFallback();
+          this.handleRendererFailure();
         }
       });
     }
@@ -283,13 +344,32 @@ export class Game {
     playerName: string,
     playerGender: PlayerGender,
   ): Promise<void> {
+    const profile = getProfile(id);
+    // 完全清档 → 阶段 0 → 注入初始好友申请。
+    //
+    // 这里必须传「性格预设」，不能传立绘档案 id —— 两者是两套编号：
+    // 档案 id 是 haru / mao / natori，性格预设是 sunny / gentle / cool / clingy。
+    // 之前把 id 直接 cast 成 PersonalityPreset 传进来，导致 personality 里
+    // tone / shyThreshold / initiative / speechRate 全是 undefined（查表查不到）。
+    this.store.startNewGame(profile.personality.preset, profile.name);
     this.store.setPlayer(playerName, playerGender);
+    // 重置开局相关的运行时状态（催促节流、排期队列）
+    this._nextNudgeAt = 0;
+    this.store.clearPendingMsgs();
     this.ui.setPlayerName(this.store.state.playerName);
-    this.store.save();
     await this.switchProfile(id);
-    // 同一人设时 switchProfile 会早退，这里兜底确保 TA 有属于自己的初遇记忆
+    // 同一档案时 switchProfile 会早退（不会跑到 applyProfile），
+    // 所以这里无条件把档案（性格 / 外观 / 喜欢的礼物）落到存档上兜底。
+    this.store.update((d) => {
+      applyProfile(profile, d);
+    });
     this.store.ensureProfileIntro();
     this.store.save();
+    // 字幕：玩家看到好友申请的内心戏
+    this.ui.setBubbleHint('什么？居然有人加我好友……');
+    // 玩家开机看到的提示
+    this.ui.addLog('你的微信收到了一条好友申请……');
+    this.ui.openNewGameContacts();
   }
 
   // ── 商城 / 配件 ─────────────────────────
@@ -382,6 +462,64 @@ export class Game {
    * 日程 = 固定课/班 + 她自己的兼职（定了必须去）+ 空档里她自己想去的地方，
    * 每天重建一次（同一天稳定），所以她是"按自己的安排过日子"，不是被玩家指挥。
    */
+  /**
+   * 你不在的时候，她按自己的日程走了一段路。
+   *
+   * 这里不是结算数值，而是**补记发生过的事**：
+   * 把错过的时段按日程重放，把去过的地点变成真的留下的照片、朋友圈与记忆，
+   * 再让这一趟回头改写她的 traits。
+   * 于是"世界在你不在时也在推进"是可查的，而不是一句设定；
+   * 玩家回来看到的不是"她一直在等你"，而是她这几天留下的痕迹。
+   */
+  private replayOfflineWorld(hoursAway: number): void {
+    const save = this.store.state;
+    const name = save.character.personality.name;
+    const t = pronoun(save.character.personality.gender);
+    const events = planOfflineEvents(save, hoursAway);
+
+    for (const e of events) {
+      const p = getPlace(e.placeId);
+      this.store.addPhoto({
+        at: e.at,
+        placeId: e.placeId,
+        caption: e.caption,
+        mood: save.character.mood,
+        img: ALBUM_IMG[e.placeId],
+      });
+      const moment = this.store.addMoment({
+        at: e.at,
+        placeId: e.placeId,
+        kind: 'outing',
+        author: 'her',
+        text: e.text,
+      });
+      // 她这一趟如果遇到了人，那这个人也就此进了她的世界
+      if (e.person && this.store.meetPerson(e.person)) {
+        this.store.addChatMsg('her', e.person.id, e.person.id, e.person.greet ?? '又见面啦，今天也来？');
+        this.store.addMomentComment(moment.id, 'npc', e.person.name, '下次一起呀');
+      }
+      this.store.addMemory({
+        kind: 'event',
+        summary: `你不在的时候，${t}${e.caption}，还留了张照片。`,
+        weight: 2,
+        tags: ['离线', p.name],
+      });
+    }
+
+    // 这一段时间也回头改写她：出去见了人会更外向，你很久没来会更在意有没有回应
+    this.store.update((d) => foldOfflineIntoTraits(d, events, hoursAway));
+
+    if (events.length) {
+      const places = [...new Set(events.map((e) => getPlace(e.placeId).name))].join('、');
+      this.ui.addLog(
+        `你离开了约 ${hoursAway.toFixed(1)} 小时。这段时间${name}没闲着：去了${places}，还留了几张照片。`,
+      );
+    } else {
+      this.ui.addLog(`你离开了约 ${hoursAway.toFixed(1)} 小时。这段时间${name}基本待在家里。`);
+    }
+    this.store.save();
+  }
+
   private tickPresence(save: import('./core/types').SaveData): void {
     const weekday = new Date().getDay();
     const day = Math.floor(save.clock / 24);
@@ -396,6 +534,8 @@ export class Game {
         weekday,
         day,
         energy: save.character.energyValue,
+        // 她今天想不想出门，也由 traits 决定（经历了什么，改变了偏好本身）
+        outgoingBias: effectiveStats(save).outgoingBias,
       });
       this.herPlanBlocks = blocks;
       this.store.setHerPlan({ day, profileId: this.profile.id, blocks });
@@ -410,19 +550,48 @@ export class Game {
     const place = block?.placeId ?? 'home';
     const line = block && block.kind !== 'rest' ? block.label : '';
 
+    // 世界是否已"连上"：阶段 0 时玩家只看得到手机，看不见她那边发生的事，
+    // 也看不见她的身影（立绘）。觉醒（阶段 1）之后才慢慢展开。
+    const worldLinked = (save.story?.phase ?? 0) >= 1;
+    if (worldLinked !== this._worldLinked) {
+      this._worldLinked = worldLinked;
+      this.setCharacterVisible(worldLinked && this.herPlaceId === 'home');
+    }
+
     if (place !== this.herPlaceId) {
       this.herPlaceId = place;
       const t = pronoun(this.profile.gender);
       const p = getPlace(place);
-      this.setCharacterVisible(place === 'home');
+      this.setCharacterVisible(worldLinked && place === 'home');
+      // 她自己出了门。出门见人是一次"经历"：表达欲↑、黏人度↓。
+      // 玩家看不见她这一趟，但这一趟确实改变了她之后的行为倾向。
       if (place !== 'home') {
+        this.store.update((d) => {
+          applyExperience(d, 'outgoing');
+        });
+      }
+      if (place !== 'home' && worldLinked) {
         this.ui.addLog(`${t}出门了，去${p.name}了。`);
+
+        // 在这个地方认识一个人——不是编好的固定 NPC，是"去了才会遇到"
+        const person = personAt(place);
+        if (person && this.store.meetPerson(person)) {
+          this.ui.addLog(`${t}在${p.name}认识了「${person.name}」。`);
+          this.store.addChatMsg('her', person.id, person.id, person.greet ?? '又见面啦，今天也来？');
+        }
+
         // 她在外会随手拍张照、发条朋友圈——回来你能在手机里翻到。
         // 同一段行程只记一次，避免时间来回调时刷屏。
         const last = this.store.state.moments.filter((m) => m.profileId === this.profile.id).slice(-1)[0];
         const dup = last && last.placeId === place && Math.abs(this.store.state.clock - last.at) < 2;
         if (!dup) {
-          this.store.addPhoto({ at: save.clock, placeId: place, caption: line || `在${p.name}`, mood: save.character.mood });
+          this.store.addPhoto({
+            at: save.clock,
+            placeId: place,
+            caption: line || `在${p.name}`,
+            mood: save.character.mood,
+            img: ALBUM_IMG[place],
+          });
           const moment = this.store.addMoment({
             at: save.clock,
             placeId: place,
@@ -430,32 +599,53 @@ export class Game {
             author: 'her',
             text: line ? `今天${line}。` : `在${p.name}。`,
           });
-          // 她的朋友会在下面回一两句，让朋友圈像真有人在用
-          const friends = herContacts(this.profile.life, save.playerName).filter((c) => c.id !== 'me');
-          const who = friends[Math.floor(Math.random() * friends.length)];
-          const say = ['注意身体', '哈哈哈', '下次带上我', '好羡慕', '收到～', '我也想去'][
-            Math.floor(Math.random() * 6)
-          ];
-          if (who) this.store.addMomentComment(moment.id, 'npc', who.name, say);
-          // 她顺手给谁发了条消息（她的手机里看得到）
-          const out = herOutingMessage(place, this.profile.life, save.character.personality.preset);
+          // 认识的人会在下面回一句，让朋友圈像真有人在用
+          if (person) {
+            const say = ['注意身体', '哈哈哈', '下次带上我', '好羡慕', '收到～', '我也想去'][
+              Math.floor(Math.random() * 6)
+            ];
+            this.store.addMomentComment(moment.id, 'npc', person.name, say);
+          }
+          // 她偶尔发个微信状态：想法就发，不一定时时刻刻都有
+          const st = PLACE_STATUS[place];
+          if (st && Math.random() < 0.5) {
+            const [emoji, word, text] = st[Math.floor(Math.random() * st.length)];
+            this.store.setStatus('her', { emoji, word, text, at: save.clock });
+          }
+          // 她顺手给认识的人发了条消息（她的手机里看得到）
+          const out = herOutingMessage(place);
           if (out) this.store.addChatMsg('her', out.contactId, 'owner', out.text, true);
         }
-      } else {
+      } else if (place === 'home' && worldLinked) {
         this.ui.addLog(`${t}回来了。`);
       }
       this.store.save();
     }
 
     const p = getPlace(this.herPlaceId);
-    this.ui.setPresence({
-      away: this.herPlaceId !== 'home',
-      placeId: this.herPlaceId,
-      placeName: p.name,
-      emoji: p.emoji,
-      line: this.herPlaceId === 'home' ? '在家' : line || placeActivityLine(this.herPlaceId, this.profile.life),
-      working: this.working !== null,
-    });
+    this.ui.setPresence(
+      worldLinked
+        ? {
+            away: this.herPlaceId !== 'home',
+            placeId: this.herPlaceId,
+            placeName: p.name,
+            emoji: p.emoji,
+            line:
+              this.herPlaceId === 'home'
+                ? '在家'
+                : line || placeActivityLine(this.herPlaceId, this.profile.life),
+            working: this.working !== null,
+          }
+        : {
+            // 阶段 0：你还看不见她那边，只有手机那头的声音
+            away: true,
+            placeId: this.herPlaceId,
+            placeName: '那一边',
+            emoji: '📱',
+            line: '只有手机那头的声音',
+            working: false,
+          },
+    );
   }
 
   /** 她不在家时把角色（含配件）藏起来 */
@@ -466,9 +656,13 @@ export class Game {
     }
   }
 
-  /** 她是否在家（不在家时只能通过手机联系） */
+  /**
+   * 她是否"不在眼前"：出门了，或者世界还没连上（阶段 0）。
+   * 两种情况下她都不会当面开口——说的话只会落到微信里。
+   * 这正是阶段 0 的关键：你只有手机那头的那个人。
+   */
   get isAway(): boolean {
-    return this.herPlaceId !== 'home';
+    return this.herPlaceId !== 'home' || !this._worldLinked;
   }
 
   // ── 打工赚钱 ─────────────────────────────
@@ -495,47 +689,76 @@ export class Game {
     this.store.addCoins(job.pay);
     this.store.save();
     this.ui.addLog(`打工结束，赚到 ${job.pay} 金币。`);
+    // 在女巫工坊打工 = 人就在工坊里，女巫会开口
+    if (job.placeId === 'witch-workshop') void this.witchSpeaks();
   }
 
   // ── 微信 / 我的手机 ─────────────────────
-  /** 铺一点她和其他人的聊天记录，让"她的手机"像真在用 */
+  /** 给已经认识的人铺一点聊天记录，让"她的手机"像真在用 */
   private ensureChats(): void {
     const save = this.store.state;
-    const seeds: Record<string, { from: 'owner' | 'other'; text: string }[]> = {
-      friend: [
-        { from: 'other', text: '你作业写完没' },
-        { from: 'owner', text: '还差一点，回去再写' },
-        { from: 'other', text: '明天体育课记得带鞋' },
-        { from: 'owner', text: '知道啦' },
-      ],
-      club: [
-        { from: 'other', text: '这周活动改到周四了' },
-        { from: 'owner', text: '收到' },
-      ],
-      colleague: [
-        { from: 'other', text: '早会资料发你邮箱了' },
-        { from: 'owner', text: '好，我等会儿看' },
-        { from: 'other', text: '中午食堂见？' },
-      ],
-      boss: [
-        { from: 'other', text: '周报今天记得交' },
-        { from: 'owner', text: '好的组长' },
-      ],
-      mom: [
-        { from: 'other', text: '记得吃饭' },
-        { from: 'owner', text: '吃过啦' },
-      ],
-    };
-    for (const c of herContacts(this.profile.life, save.playerName)) {
-      if (c.id === 'me') continue;
-      const has = this.store.state.threads.some(
-        (t) => t.owner === 'her' && t.contactId === c.id && t.profileId === this.profile.id,
+    for (const person of save.metPeople) {
+      // 开局的好友申请道具不是真联系人，否则她的手机里会出现"她和自己聊天"
+      if (person.id === 'her-opening') continue;
+      const has = save.threads.some(
+        (t) => t.owner === 'her' && t.contactId === person.id && t.profileId === this.profile.id,
       );
       if (has) continue;
-      const lines = seeds[c.id] ?? [{ from: 'other' as const, text: '在吗' }];
-      for (const s of lines) {
-        this.store.addChatMsg('her', c.id, s.from === 'owner' ? 'owner' : c.id, s.text);
-      }
+      this.store.addChatMsg(
+        'her',
+        person.id,
+        person.id,
+        `在${getPlace(person.placeId).name}见过你，还记得吗？`,
+      );
+      this.store.addChatMsg('her', person.id, 'owner', '记得呀。');
+    }
+
+    // 女巫是她本来就认识的人（外婆的老朋友），先铺两句，
+    // 别让这段关系看起来是空的 —— 同时这里就把女巫"不剧透"的态度立住了。
+    const witchThread = save.threads.some(
+      (t) => t.owner === 'her' && t.contactId === WITCH_ID && t.profileId === this.profile.id,
+    );
+    if (!witchThread) {
+      this.store.addChatMsg('her', WITCH_ID, 'owner', '阿姨，我外婆……以前是不是常来你这儿？');
+      this.store.addChatMsg('her', WITCH_ID, WITCH_ID, '来啊！一来就往那把椅子上瘫，一坐一下午，赶都赶不走。');
+      // 年龄梗：她其实是外婆的同辈，按辈分该叫婆婆 —— 但这是她的逆鳞，也是全篇最稳的笑点
+      this.store.addChatMsg('her', WITCH_ID, 'owner', '……那按辈分，我是不是该叫您婆婆？');
+      this.store.addChatMsg('her', WITCH_ID, WITCH_ID, '叫阿姨。谁再叫婆婆，我把谁扔出去。');
+      // 笑完立刻收一个短句：笑点和泪点用同一份素材
+      this.store.addChatMsg('her', WITCH_ID, WITCH_ID, '……啧。行了，别提这些。你要的东西我还在弄，催也没用。');
+    }
+  }
+
+  /**
+   * 女巫开口。
+   *
+   * 台词由 agent 生成，但两道门都在 `requestNpcLine` 里：
+   * 上下文白名单（她此刻被允许知道什么）+ 输出黑名单（命中禁词就整句丢弃换兜底）。
+   * 所以哪怕模型今天不听话，也漏不出剧透。
+   * 打工时玩家就在工坊里，所以这句话是**对玩家说的**，进日志与记忆，不塞进她的手机。
+   */
+  private async witchSpeaks(): Promise<void> {
+    const npc = this.store.npcState(WITCH_ID);
+    const situation = situationFor(this.store.state, npc);
+    const scene: Record<NpcSituation, string> = {
+      idle: '玩家在女巫工坊打完工，正站在柜台前。你跟这个不太熟的人说一句——你自来熟、话多、爱使唤人，别端着。',
+      hint: '玩家在女巫工坊打完工。你知道她们在查外婆的事，但你答应过不说。你**不是**沉默寡言型：打个哈哈岔开、或者把人轰去干活，总之是不动声色地拒绝。',
+      afterOpen: '玩家在女巫工坊打完工。你刚背着她们把通道打开了，她们还不知道。你不擅长撒谎，所以干脆岔开话题、催人去干活。',
+      device: '玩家在女巫工坊打完工。跨界设备已经做出来了，但材料还得攒。你嘴上凶，其实在催自己。',
+    };
+    try {
+      const r = await requestNpcLine(this.store.state, WITCH_ID, situation, scene[situation]);
+      if (!r.text) return;
+      this.ui.addLog(`女巫阿姨头也不抬：「${r.text}」`, true);
+      this.store.addMemory({
+        kind: 'event',
+        summary: `在工坊打工时，女巫阿姨说：「${r.text}」`,
+        weight: 2,
+        tags: ['女巫', '工坊'],
+      });
+      this.store.save();
+    } catch (err) {
+      console.warn('[npc] 女巫台词失败', err);
     }
   }
 
@@ -544,6 +767,7 @@ export class Game {
     const clean = text.trim();
     if (!clean) return;
     const m = this.store.addMoment({ at: this.store.state.clock, kind: 'mine', author: 'me', text: clean });
+    this.store.touchMyUpdate(); // 玩家发了内容，等她查
     this.ui.addLog('你发了条朋友圈。');
     const t = pronoun(this.profile.gender);
     try {
@@ -556,8 +780,21 @@ export class Game {
     }
   }
 
-  private writeMyDiary(text: string): void {
-    this.store.addMyDiary(text);
+  /** 相机：在当前地点拍一张，存进相册 */
+  private shoot(placeId: string): void {
+    const p = getPlace(placeId);
+    this.store.addPhoto({
+      at: this.store.state.clock,
+      placeId,
+      caption: `我拍的 · ${p.name}`,
+      mood: this.store.state.character.mood,
+      img: ALBUM_IMG[placeId],
+    });
+    this.store.save();
+    this.ui.addLog(`你拍了一张${p.name}，存进了相册。`);
+  }
+
+  private writeMyDiary(text: string): void {    this.store.addMyDiary(text);
     this.ui.addLog('你写了今天的日记。');
   }
 
@@ -566,15 +803,17 @@ export class Game {
     this.ui.addLog('日程已保存。');
   }
 
-  /** Live2D 加载失败时退回矢量渲染器 */  private switchRendererFallback(): void {
-    const vectorProfile = getProfile(DEFAULT_PROFILE_ID);
-    this.boy.dispose();
-    this.boy = this.createRenderer(vectorProfile);
-    this.boy.mount(this.canvasFor(vectorProfile));
-    this.boy.resize(window.innerWidth, window.innerHeight);
-    this.profile = vectorProfile;
-    this.store.update((d) => applyProfile(vectorProfile, d));
-    this.ui.setProfileId(vectorProfile.id);
+  /**
+   * Live2D 模型加载失败时的处理。
+   *
+   * 注意：不再"回退到矢量立绘"——那套渲染器已经删掉了（600 行死代码，
+   * 且人物观感差）。现在的做法是保持房间与全部玩法可用，
+   * 只在日志里说明原因，让用户知道该检查模型文件或 Cubism 版本。
+   */
+  private handleRendererFailure(): void {
+    this.ui.setLive2DStatus({ loading: false, ready: false, error: '模型文件或 Cubism 版本不匹配' });
+    this.ui.addLog('Live2D 模型没加载成功：请检查 public/character 的 moc3 版本是否 ≤ 4。', true);
+    this.store.save();
   }
 
   // ── 主循环 ──────────────────────────────
@@ -641,7 +880,9 @@ export class Game {
     // 打工结算
     this.tickJob(now);
 
-    const home = this.herPlaceId === 'home';
+    // 阶段 0 时她那边的事（当面搭话、作息台词、日记）对玩家是看不见的：
+    // 世界还没连上，你只有手机。所以这些自主行为要等 _worldLinked 才跑。
+    const home = this.herPlaceId === 'home' && this._worldLinked;
     // 无操作时的主动搭话（只有她在旁边时才会当面开口）
     if (home) this.maybeGossip(now);
     // 作息台词：到点自己说要去睡 / 早上打招呼
@@ -649,7 +890,7 @@ export class Game {
     // 偶尔主动看一眼时间，顺口说一句（作息不僵硬的关键）
     if (home) this.tickTimeGlance(now);
     // 傍晚/夜里她可能随手写一笔日记
-    this.tickDiary(now);
+    if (this._worldLinked) this.tickDiary(now);
 
     // UI 数值
     this.ui.tick(save);
@@ -657,8 +898,266 @@ export class Game {
     // 定期存档
     if (now % 1 < dt) this.store.save();
 
+    // 主线推进：**全项目唯一一处**（阈值与判定见 core/story.ts / store.syncStory）
+    const unlocked = this.store.syncStory();
+    if (unlocked === 'confess') {
+      void this.playConfessionStory();
+    } else if (unlocked === 'giftFumble') {
+      void this.playGiftFumbleStory();
+    } else if (unlocked === 'awaken') {
+      // 幕后原因：女巫一个人偷偷把通道打开了（她不让任何人知道）
+      this.secretlyOpenByWitch();
+      // 所以这一幕只给个可爱的中二解释，**不点破** —— 那层真相留到后面才揭。
+      this.ui.showStoryMonologue(
+        '……等一下。\n我好像，看见你那边了。\n没有任何征兆，就是突然看见的。\n难道说，这就是「想见你」的力量吗？',
+        '视界重叠',
+      );
+    } else if (unlocked === 'physical') {
+      this.ui.showStoryMonologue(
+        '女巫阿姨说，转换器终于做出来了。\n她不肯告诉我原理，只说让我自己去亲眼找答案。\n我有点紧张……但我想见你。',
+        '实体破壁',
+      );
+    }
+
+    // AI 有限视角：每游戏小时，按概率决定她刷不刷手机。
+    // - 已读但没主动找 → 红点消失 + 不再打扰
+    // - 决定找 → 等 5~30 分钟（real seconds 折算成游戏分钟）发条微信
+    // - 不找 → 红点持续，玩家下次发内容还会再考虑
+    this.tickAIPerspective(save, now);
+
+    // 排期消息送达：开场白那种固定对话，到点了才一条条进会话（不耗 token）
+    this.tickPendingMsgs();
+
+    // 阶段 0 的沉默催促：她开过口却等不到回信，过一会儿会主动问一句
+    this.tickOpeningNudge(now);
+
     requestAnimationFrame(this.loop);
   };
+
+  /** 把到点的排期消息送进会话（开场白等固定对话用） */
+  private tickPendingMsgs(): void {
+    const n = this.store.deliverDueMsgs();
+    if (n > 0) {
+      const name = this.store.state.character.personality.name;
+      this.ui.addLog(`${name}发来消息。`);
+    }
+  }
+
+  /**
+   * 关系进展到 50 —— 她坦白：外婆的遗物，以及当初加你的真实动机。
+   * 这一幕走过之后，"其实我是做梦梦到的"那个谎就正式揭过去了。
+   */
+  private async playConfessionStory(): Promise<void> {
+    const you = this.store.state.playerName;
+    this.ui.openPanel('myphone');
+    this.phonesMeOpenChat();
+    this.ui.addLog(`${this.charPronoun()}好像有话要跟你说。`, true);
+    await this.scriptMessages([
+      `那个……${you}，其实我骗了你。`,
+      '我不是做梦梦到你的微信号的。',
+      '我外婆不久前过世了。她生前总是偷偷一个人掉眼泪，却从来不肯告诉我为什么。',
+      '整理她遗物的时候，我翻到一本旧书，里面夹着一张纸条，写着你这个号码……还有一句很严厉的警告，让我别去找。',
+      '可是我想知道，外婆究竟为什么难过了一辈子。',
+      '我太想查明真相了，才鼓起勇气按下了添加。对不起，一开始没敢跟你说实话。',
+    ], 1400);
+
+    const choice = await this.ui.showStoryChoice(`${this.charPronoun()}向你坦白了。`, [
+      '原来是为了找外婆的答案啊……别担心，我陪你一起找。',
+      '外婆当年，是不是深爱过我这边的长辈？……谢谢你愿意告诉我。',
+    ]);
+    this.store.addChatMsg('me', 'her', 'owner', choice === 0
+      ? '原来是为了找外婆的答案啊……别担心，我陪你一起找。'
+      : '外婆当年，是不是深爱过我这边的长辈？……谢谢你愿意告诉我。');
+    await this.scriptMessages(['……谢谢你。', '那我们说好了，一起找。'], 1100);
+
+    this.store.addMemory({
+      kind: 'milestone',
+      summary: `${this.charPronoun()}向你坦白：她是为了查外婆抱憾一生的真相，才加了你。`,
+      weight: 5,
+      tags: ['坦白', '外婆', '遗物'],
+    });
+    this.store.pushTimeline('她坦白了外婆的遗物');
+    this.store.save();
+  }
+
+  /** 关系进展到 150 后播放一次完整的跨界发现剧情。 */
+  private async playGiftFumbleStory(): Promise<void> {
+    const name = this.store.state.character.personality.name;
+    this.ui.openPanel('myphone');
+    // 接受好友后才能进入本段主线；若旧档尚未通过申请，就提示并等下次主循环重试。
+    const opening = this.store.state.metPeople.find((p) => p.id === 'her-opening');
+    if (opening && !opening.added) {
+      this.store.update((d) => { d.story.giftFumbleAt = null; });
+      return;
+    }
+    this.phonesMeOpenChat();
+    this.ui.addLog(`${this.charPronoun()}兴冲冲地说有件好消息要告诉你。`, true);
+    await this.scriptMessages([
+      '对啦对啦！告诉你一个超级好消息！',
+      '我今天去镇上的市集，看到一个特别精致的手作限定挂件，第一眼就觉得特别适合你！',
+      '快把详细收货地址发给我，我顺路去驿站寄给你，当作认识这么久的惊喜礼物♪',
+    ], 1250);
+
+    const addressSubmitted = await this.ui.showAddressDialog();
+    if (!addressSubmitted) return;
+    // 输入框只做必填校验，地址不离开输入框、不写入会话、存档或网络请求。
+    const firstChoice = await this.ui.showStoryChoice(`怎么回复${this.charPronoun()}？`, [
+      '哇，太惊喜了！地址发你啦，谢谢你呀~',
+      '居然还悄悄准备了礼物？那我以后也得想想送你什么了。',
+    ]);
+    this.store.addChatMsg('me', 'her', 'owner', firstChoice === 0
+      ? '哇，太惊喜了！地址发你啦，谢谢你呀~'
+      : '居然还悄悄准备了礼物？那我以后也得想想送你什么了。');
+    await this.scriptMessages(['嘿嘿，不客气！我这就去驿站排队～你等我好消息哦！📮'], 900);
+
+    await new Promise((resolve) => window.setTimeout(resolve, 5000));
+    await this.scriptMessages([
+      '诶……？奇怪了。',
+      '我刚拿着地址去驿站，工作人员在电脑上输了半天，说系统一直报错：查无此行政区……',
+      '我用快递软件搜了一下，你说的省和城市，在我们这里的系统里都不存在呀？',
+    ], 1150);
+    const secondChoice = await this.ui.showStoryChoice(`${this.charPronoun()}在驿站遇到了问题。`, [
+      '怎么可能？这可是挺大的城市啊，你是不是拼音或字打错了？',
+      '你搜搜看全称呢？或者是驿站的网络出故障了吧？',
+    ]);
+    this.store.addChatMsg('me', 'her', 'owner', secondChoice === 0
+      ? '怎么可能？这可是挺大的城市啊，你是不是拼音或字打错了？'
+      : '你搜搜看全称呢？或者是驿站的网络出故障了吧？');
+    await this.scriptMessages([
+      '我核对了好几次，字完全没错呀……',
+      '等一下哦，我打开我们这里的权威世界地图软件查查看……',
+      { image: '/map/eislan.jpg' },
+    ], 1150);
+    this.ui.showStoryMonologue(
+      '这张地图上，没有我们这边任何一个国家或城市。\n难道我们真的隔着完全不同的世界？！',
+      '异世界？',
+    );
+    await this.scriptMessages([
+      '怎么会这样……地图上完全找不到你的城市……',
+      '我们真的踩在完全不同的世界里吗……？',
+      '那我是不是……永远都没法把礼物亲手送到你手里了？',
+      '呜，眼睛有点湿了……等我一下，我去摸个纸巾。',
+    ], 950);
+    await new Promise((resolve) => window.setTimeout(resolve, 3000));
+    await this.scriptMessages([
+      '对方撤回了一条消息',
+      '打错字了……手太笨，刚才找纸巾把桌上的置物盒撞翻了。',
+      '纸巾没摸到，把外婆以前留下的老摆件给砸地上了，我头顶还挨了一下……',
+    ], 1100);
+    const thirdChoice = await this.ui.showStoryChoice(`先确认${this.charPronoun()}有没有受伤。`, [
+      '噗……没事吧？有没有碰痛头呀？',
+      '手忙脚乱的也太可爱了……没受伤吧？',
+    ]);
+    this.store.addChatMsg('me', 'her', 'owner', thirdChoice === 0
+      ? '噗……没事吧？有没有碰痛头呀？'
+      : '手忙脚乱的也太可爱了……没受伤吧？');
+    this.ui.showStoryMonologue(
+      `虽然隔着屏幕看不到，但脑海里已经浮现出${this.charPronoun()}手忙脚乱撞翻盒子、被纸巾盒砸中的笨拙画面了……`,
+      '脑内画面',
+    );
+    await this.scriptMessages([
+      '没受伤啦，就是有点丢脸……这个老摆件居然完全没坏，还在地上咔哒咔哒地摇。',
+      '我小时候听外婆说过：明明一点风都没有，它怎么总能顺着那边的节奏在响呢。',
+      '那时候我觉得外婆记错了，窗子明明开着。可刚才看着它摇，我突然觉得……就算隔着不同世界、现在摸不到，我也不要和你断开联系！',
+    ], 1200);
+    const fourthChoice = await this.ui.showStoryChoice('摆件和不想断联，好像不是一回事？', [
+      '虽然确实很感动……但“看着摆件摇晃”和“不跟我断开联系”，这是什么逻辑啊？',
+      '等一下，这摆件摇晃跟你不跟我断开联系……有什么必然联系吗？',
+    ]);
+    this.store.addChatMsg('me', 'her', 'owner', fourthChoice === 0
+      ? '虽然确实很感动……但看着摆件摇晃和不跟我断开联系，这是什么逻辑啊？'
+      : '等一下，这摆件摇晃跟你不跟我断开联系……有什么必然联系吗？');
+    await this.scriptMessages([
+      '因为……我觉得你肯定和它一样，呆呆的、又有点可爱啊！看到它就想起你了！',
+    ], 1100);
+    this.ui.showStoryMonologue('喂喂……我怎么就跟那个摇摇晃晃的呆呆摆件像了啊！', '逻辑吐槽');
+    const fifthChoice = await this.ui.showStoryChoice('要不要反击一下？', [
+      '喂！我哪里呆了，明明是你在平地摔跤手忙脚乱好不好！',
+      '好吧，看在你夸我可爱的份上，就不跟你计较啦~',
+    ]);
+    this.store.addChatMsg('me', 'her', 'owner', fifthChoice === 0
+      ? '喂！我哪里呆了，明明是你在平地摔跤手忙脚乱好不好！'
+      : '好吧，看在你夸我可爱的份上，就不跟你计较啦~');
+    await this.scriptMessages([
+      '嘿嘿，被它这么一闹，我刚才那种难过得要死的感觉都没了～',
+      '反正，就算只能隔着屏幕，我也要一直一直陪着你！',
+    ], 1200);
+    this.store.addMemory({ kind: 'event', summary: `我们发现地图属于两个不同的世界；${this.charPronoun()}摔倒时撞翻了外婆留下的摇摆摆件，并决定继续陪伴彼此。`, weight: 5, tags: ['异世界', '外婆', '摆件'] });
+    this.store.save();
+    this.ui.addLog(`${name}说会一直陪着你。`, true);
+  }
+
+  private phonesMeOpenChat(): void {
+    this.ui.openPanel('myphone');
+    // UI 面板刚打开时，通过聊天页的公开入口保持和普通聊天一致。
+    this.ui.openChatWithHer();
+  }
+
+  /**
+   * 逐条把她的话排进会话（走排期队列，像真人一条条打出来）。
+   * 一行既可以是纯文本，也可以是 `{ text, image }` —— 后者送达时会成为一条图片消息，
+   * 和真人微信一样留在聊天记录里（可翻回、可点开），而不是弹一次就没的弹窗。
+   */
+  private scriptMessages(
+    lines: Array<string | { text?: string; image: string }>,
+    intervalMs: number,
+  ): Promise<void> {
+    const base = Date.now();
+    this.store.scheduleMsgs(lines.map((line, index) => {
+      const one = typeof line === 'string' ? { text: line, image: undefined } : line;
+      return {
+        owner: 'me' as const,
+        contactId: 'her',
+        from: 'her' as const,
+        text: one.text ?? '',
+        image: one.image,
+        dueAt: base + intervalMs * (index + 1),
+      };
+    }));
+    return new Promise((resolve) => window.setTimeout(resolve, intervalMs * lines.length + 120));
+  }
+
+  /** 开场沉默催促的固定台词（也用作"是否已催过"的判据，写死别改） */
+  private static readonly NUDGE_LINES = ['……在吗？', '那个……你还在吗？'];
+
+  /**
+   * 阶段 0 的沉默催促：
+   * 她接受了好友、发完开场白后，如果玩家一直不回，她会（隔一阵子）
+   * 主动问一句"……在吗？"。让开局不是干等她开口，而是有"活人感"。
+   *
+   * 判定完全基于存档（阶段 0 + 已通过申请 + 玩家没开口 + 还没催够），
+   * 所以刷新页面也接得上，不依赖运行时标记。
+   */
+  private tickOpeningNudge(now: number): void {
+    const st = this.store.state;
+    if (st.story.phase !== 0) return;
+    const op = st.metPeople.find((p) => p.id === 'her-opening');
+    if (!op || !op.added) return; // 还没通过好友申请
+    const th = st.threads.find(
+      (t) => t.owner === 'me' && t.contactId === 'her' && t.profileId === st.profileId,
+    );
+    const msgs = th?.msgs ?? [];
+    if (msgs.some((m) => m.from === 'me')) return; // 玩家已经开口，不催
+    const sent = msgs.filter(
+      (m) => m.from === 'her' && Game.NUDGE_LINES.includes(m.text),
+    ).length;
+    if (sent >= Game.NUDGE_LINES.length) return;
+
+    // 等开场白全部送达之后再等一会儿才催
+    if (this.store.pendingHerCount() > 0) {
+      this._nextNudgeAt = now + 20; // 她还在打字，20 秒后再看
+      return;
+    }
+    if (this._nextNudgeAt === 0) {
+      this._nextNudgeAt = now + 40; // 开场白发完后再等 40 秒
+      return;
+    }
+    if (now < this._nextNudgeAt) return;
+
+    this._nextNudgeAt = 0;
+    this.store.addChatMsg('me', 'her', 'her', Game.NUDGE_LINES[sent], true);
+    this.ui.addLog(`${st.character.personality.name}又发来一条。`);
+  }
 
   /** 游戏内时钟始终跟随真实本地时间（再叠加玩家手动偏移），做到"时间和现实统一"。 */
   private tickClock(dt: number): void {
@@ -734,7 +1233,21 @@ export class Game {
     const rate = this.store.state.character.personality.speechRate;
     this.speaking = true;
     this.speechEndsAt = this.timeSec + line.length / rate + 0.25;
-    voice.speak(line, this.store.state.character.personality.preset);
+    voice.speak(
+      line,
+      this.store.state.character.personality.preset,
+      this.store.state.character.personality.gender,
+    );
+  }
+
+  /**
+   * 当前角色的第三人称。
+   * 所有面向玩家的文案都必须经过它——Natori 是男性立绘，
+   * 写死"她"就会让他显示成她。注意这不只是称呼问题：
+   * 玩家性别也是可选的，这个项目不预设固定配对。
+   */
+  private charPronoun(): '他' | '她' {
+    return pronoun(this.store.state.character.personality.gender);
   }
 
   // ── 输入：触摸 ───────────────────────────
@@ -823,9 +1336,14 @@ export class Game {
 
   // ── 交互处理 ─────────────────────────────
   private handleTouch(part: TouchKind): void {
+    // 实体未购入前不能触摸。提示玩家去手机里买实体。
+    if (!this.store.state.story?.hasPhysical) {
+      this.ui.addLog('她还不在你身边……先在「状态」里给她买一个实体。');
+      return;
+    }
     const result = resolveTouch(part, this.store.state);
     this.store.update((d) => {
-      applyGain(d, result.affinityDelta, result.moodDelta);
+      applyGain(d, result.affinityDelta, result.moodDelta, 'touch');
       // 被摸头/碰脸容易害羞
       if (result.emotion === 'shy') d.character.mood = 'shy';
       d.character.activity = 'idle';
@@ -843,11 +1361,16 @@ export class Game {
   }
 
   private handleGift(id: string): void {
+    // 实体未购入前，礼物也送不过去（不在同一个世界）。
+    if (!this.store.state.story?.hasPhysical) {
+      this.ui.addLog('礼物还送不过去……先在「状态」里给她买一个实体吧。');
+      return;
+    }
     const gift = GIFTS.find((g) => g.id === id);
     if (!gift) return;
     const result = resolveGift(gift, this.store.state);
     this.store.update((d) => {
-      applyGain(d, result.affinityDelta, result.moodDelta);
+      applyGain(d, result.affinityDelta, result.moodDelta, 'gift');
       d.character.mood = 'happy';
       if (!d.character.likedGifts.includes(gift.id) && Math.random() < 0.5) {
         d.character.likedGifts.push(gift.id);
@@ -866,11 +1389,16 @@ export class Game {
   }
 
   private handleActivity(id: string): void {
+    // 共同活动要她真的在你身边（买了实体）才做得到
+    if (!this.store.state.story?.hasPhysical) {
+      this.ui.addLog('还碰不到她……先在「状态」里给她买一个实体吧。');
+      return;
+    }
     const def = ACTIVITIES.find((a) => a.id === id);
     if (!def) return;
     const result = resolveActivity(def, this.store.state);
     this.store.update((d) => {
-      applyGain(d, result.affinityDelta, result.moodDelta);
+      applyGain(d, result.affinityDelta, result.moodDelta, 'activity');
       d.character.activity = def.activity;
       d.character.mood = 'happy';
     });
@@ -946,6 +1474,14 @@ export class Game {
     this.store.save();
   }
 
+  /**
+   * 引擎护栏：明显的恶语不该被模型解读成撒娇。
+   * "说什么话"交给模型，但"被骂了不可能更喜欢你"是确定性规则 ——
+   * 和"白天不许睡觉"属于同一类约束，不交给模型判断。
+   */
+  private static readonly HOSTILE =
+    /你好烦|闭嘴|滚开|你滚|讨厌你|不想理你|烦死|智障|傻逼|傻比|去死|神经病|别烦我/i;
+
   // ── 大模型对话 ───────────────────────────
   private async sendToModel(text: string): Promise<void> {
     const clean = text.trim();
@@ -955,14 +1491,12 @@ export class Game {
     this.ui.pushTurn({ role: 'user', text: clean, iso: new Date().toISOString() });
     // 我和她的对话同时写进微信记录（我的手机里能翻到、也会持久化）
     this.store.addChatMsg('me', 'her', 'owner', clean);
+    this.store.touchMyUpdate(); // 玩家发了消息，等她看到
 
     // 用户消息也进记忆（低权重），模型能看到自己刚说过什么
     this.store.addMemory({ kind: 'dialogue', summary: `你说：${clean}`, weight: 2, tags: ['对话'] });
     // 陪她聊天能攒一点金币（商城用）
     this.store.addCoins(1);
-
-    const turns = this.ui.getTurns();
-    void turns;
 
     try {
       const place = getPlace(this.herPlaceId);
@@ -978,19 +1512,30 @@ export class Game {
 
       // 白名单之后的引擎处理：模型说了什么不重要，字段合法才生效
       const action = reconcileAction(intent.action, save.clock, save.character.energyValue);
+      // 害羞阈值不再读预设常量，而是由 traits 推出来——
+      // 戒备心高的她，同一句话也会更容易脸红。
       const mood = resolveMood(
         intent.emotion,
         intent.intensity,
         save.character.affinity,
-        save.character.personality.shyThreshold,
+        effectiveStats(save).shyThreshold,
       );
 
       this.store.update((d) => {
         d.character.mood = mood;
         d.character.activity = action;
-        // 对话本身也有轻微亲密度收益，跟内容质量无关，只跟"你愿意说话"有关
-        d.character.affinity = Math.min(100, d.character.affinity + 0.15);
+        // 关系涨跌由**她自己**决定：模型（或离线规则）给出她对这次对话的真实感受，
+        // 引擎再 clamp 一遍。不再是"聊一句就固定 +1.5"的无脑累加。
+        // 前端不弹任何提示 —— 想知道她怎么想，去状态面板看。
+        // 恶语还要再过一道护栏：模型今天心情好、把人骂它当撒娇，引擎不允许。
+        const bond = Game.HOSTILE.test(clean)
+          ? Math.min(intent.affinityDelta, -0.5)
+          : intent.affinityDelta;
+        d.character.affinity = clampNum(d.character.affinity + bond, 0, AFFINITY_MAX);
+        // 她开口、你接住了 —— 这是一次"经历"，会改写她的表达欲与戒备心
+        applyExperience(d, 'chat_reply');
       });
+      this.lastPlayerReplyAt = performance.now();
       this.activityLockUntil = performance.now() + 6000;
 
       // 重要对话 / 情绪强烈的对话 → 记下写日记的契机
@@ -1179,6 +1724,135 @@ export class Game {
       d.character.energyValue = Math.min(100, d.character.energyValue + 22);
     });
     this.ui.addLog(`新的一天，${pronoun(this.store.state.character.personality.gender)}先醒了。`);
+  }
+
+  /**
+   * AI 有限视角的"活人感"实现：
+   * - 玩家发了新内容（touchMyUpdate 推进 myLastUpdate）
+   * - 这次循环里，如果她到时间该刷手机，按 initiative + 心情/好感决定：
+   *     - 找玩家 → 等 5~30 分钟后发条微信（耗 1 次 token）
+   *     - 不找 → 红点继续
+   * - 没到时间，啥都不做
+   *
+   * 时机选择：玩家发完内容的那一刻就重置她的"下次 check"（5~15 分钟内她会看），
+   * 避免她拖一整天都不看。如果她看完了决定不找，那就等下一个游戏小时再 check。
+   */
+  private tickAIPerspective(save: SaveData, now: number): void {
+    const p = save.perspective;
+    // 0) 玩家刚发了新内容 → 重置她下次 check 时间到 5~15 分钟（real sec）后
+    if (p.myLastUpdate > p.herLastCheck && this._nextCheckRealAt < now) {
+      this._nextCheckRealAt = now + 5 + Math.random() * 10; // 5~15 sec 后她会看
+    }
+
+    // 1) 她决定主动发消息的时间到了
+    if (this._nextProactiveMsgAt > 0 && now >= this._nextProactiveMsgAt) {
+      this._nextProactiveMsgAt = 0;
+      // 防止同一小时重复
+      const clockInt = Math.floor(save.clock);
+      if (clockInt === this._lastProactiveClock) return;
+      this._lastProactiveClock = clockInt;
+      // 触发主动发消息（耗 1 次 token）
+      void this.sendProactiveGreeting();
+    }
+
+    // 2) 她该刷手机了
+    if (this._nextCheckRealAt > 0 && now >= this._nextCheckRealAt) {
+      this._nextCheckRealAt = 0;
+      // 决定看还是不看：她"在不在家"决定概率更高（在家时刷手机概率高）
+      const home = this.herPlaceId === 'home';
+      const checkProb = home ? 0.85 : 0.4; // 在家 85% 概率看，出门只 40%
+      if (Math.random() < checkProb) {
+        this.store.herCheckedPhone();
+
+        // 她刷手机时发现：上一次主动找你，你没回。
+        // 这是一次"被冷落"的经历——会让她更想被回应（黏人度↑），也更收着（戒备心↑）。
+        if (
+          this._pendingProactiveAt > 0 &&
+          this.lastPlayerReplyAt < this._pendingProactiveAt &&
+          now - this._pendingProactiveAt > 45
+        ) {
+          this._pendingProactiveAt = 0;
+          this.store.update((d) => {
+            applyExperience(d, 'chat_ignored');
+          });
+          this.store.addMemory({
+            kind: 'event',
+            summary: '她主动找你说话，你没回，她自己坐了一会儿。',
+            weight: 2,
+            tags: ['被冷落'],
+          });
+        }
+
+        // 看完决定找不找玩家。
+        // 主动性不再读预设里的常量，而是由 traits 推出来的值：
+        // 被回应得多、表达欲长上去了的她，会明显更愿意先开口。
+        const { initiative } = effectiveStats(this.store.state);
+        const affinity = this.store.state.character.affinity;
+        const mood = this.store.state.character.moodValue;
+        // 越主动 / 好感越高 / 心情越好 → 越倾向找
+        const reachProb = Math.min(0.9, initiative * 0.4 + affinity / (AFFINITY_MAX * 2) + (mood - 50) / 200);
+        if (p.myLastUpdate > p.herLastCheck) {
+          // 玩家有新内容 → 找的概率高
+          if (Math.random() < Math.max(0.4, reachProb + 0.2)) {
+            // 决定找：5~30 秒后发条微信
+            this._nextProactiveMsgAt = now + 5 + Math.random() * 25;
+          }
+          // 不找就不安排，让玩家那边红点持续
+        }
+      } else {
+        // 决定不看 → 等下一个游戏小时再决定
+        this._nextCheckRealAt = now + 30 * 60; // 半小时后再说
+      }
+    }
+  }
+
+  /**
+   * 视界重叠的**幕后原因**：女巫一个人偷偷把两个世界的通道打开了。
+   *
+   * 这就是"关系数值到了就解锁"缺的那一环 —— 光聊天不该能开通不同世界。
+   *
+   * 她谁也没告诉，所以这里**不点破**：只在「她的手机」里留下一条
+   * 玩家翻得到、当时却完全看不懂的痕迹。等她哪天翻到，
+   * 那就是这个伏笔兑现的地方 —— 而不是靠一句旁白告诉玩家。
+   */
+  private secretlyOpenByWitch(): void {
+    const w = this.store.npcState(WITCH_ID);
+    w.secretlyOpened = true;
+    w.knowsContact = true;
+    this.store.save();
+    // 证据不能写成"此地无银"——玩家一眼就看出被提示了，伏笔就变说明书了。
+    // 所以要写得**当时看完全没意义**：一句自言自语的丧气话。
+    // 等玩家哪天翻到，把时间点和"突然就能看见了"一对，才会"啊"出来。
+    this.store.addChatMsg('her', WITCH_ID, WITCH_ID, '啧，手一抖，差点偏了。');
+    this.store.addChatMsg('her', WITCH_ID, 'owner', '……啊？');
+    this.store.addChatMsg('her', WITCH_ID, WITCH_ID, '没事没事，睡你的。');
+  }
+
+  /**
+   * 她主动找你聊天：跟模型要一句问候语，写进微信会话。
+   * 不会让玩家产生任何"回合"感，是她从她那边主动发起的。
+   */
+  private async sendProactiveGreeting(): Promise<void> {
+    const cname = this.store.state.character.personality.name;
+    try {
+      const { requestProactive } = await import('./ai/client');
+      const text = await requestProactive(this.store.state);
+      this.store.addChatMsg('me', 'her', 'her', text);
+      // 记下"她主动开口了"，等她被回应或被冷落
+      this._pendingProactiveAt = performance.now();
+      // 同时发到我这边手机，让她有"她找我了"的未读感
+      this.ui.addLog(`${cname}发来一条消息。`);
+    } catch {
+      // 离线兜底
+      this.store.addChatMsg(
+        'me',
+        'her',
+        'her',
+        this.store.state.character.moodValue > 50
+          ? '……喂，在干嘛？'
+          : '……今天有点累。你呢？',
+      );
+    }
   }
 }
 
