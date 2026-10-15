@@ -1,5 +1,7 @@
 import type { SaveData } from '../core/types';
 import { pronoun } from './gender';
+import { applyExperience, type ExperienceKind } from './evolution';
+import { AFFINITY_MAX } from './story';
 
 /**
  * 互动规则表。
@@ -35,35 +37,35 @@ const TOUCH_TABLE: Record<
   head: {
     lines: ['……你摸我头了。', '头发会乱的。', '嗯……还挺舒服。', '别一直摸啦。'],
     emotion: 'shy',
-    aff: 1.2,
+    aff: 12,
     mood: 4,
     summary: (t) => `你伸手摸了摸${t}的头。`,
   },
   face: {
     lines: ['！……干嘛突然凑这么近。', '别捏。', '……看什么。', '脸会红啊。'],
     emotion: 'shy',
-    aff: 1.5,
+    aff: 15,
     mood: 5,
     summary: (t) => `你凑近了${t}的脸。`,
   },
   hand: {
     lines: ['手凉。', '要牵就牵啊。', '……握住了。'],
     emotion: 'happy',
-    aff: 1.6,
+    aff: 16,
     mood: 6,
     summary: () => '你们握了握手。',
   },
   torso: {
     lines: ['喂！', '……痒。', '别闹。', '在呢。'],
     emotion: 'shy',
-    aff: 1,
+    aff: 10,
     mood: 4,
     summary: (t) => `你戳了戳${t}的肚子。`,
   },
   leg: {
     lines: ['诶——别碰腿。', '……', '干嘛？'],
     emotion: 'excited',
-    aff: 0.8,
+    aff: 8,
     mood: 3,
     summary: (t) => `你碰了${t}的腿，${t}缩了一下。`,
   },
@@ -74,9 +76,9 @@ export function resolveTouch(kind: TouchKind, save: SaveData): TouchResult {
   const line = row.lines[Math.floor(Math.random() * row.lines.length)];
   const t = pronoun(save.character.personality.gender);
 
-  // 亲密度越低，同样举动的加成越低；高亲密度时触碰上限收敛，防止数值爆炸
-  const affScale = 0.5 + (save.character.affinity / 100) * 0.7;
-  const decay = save.character.affinity > 90 ? 0.35 : 1;
+  // 关系进展越低，同样举动的加成越低；高时触碰上限收敛，防止数值爆炸
+  const affScale = 0.5 + (save.character.affinity / AFFINITY_MAX) * 0.7;
+  const decay = save.character.affinity > AFFINITY_MAX * 0.9 ? 0.35 : 1;
 
   return {
     line,
@@ -103,11 +105,11 @@ export interface Gift {
 }
 
 export const GIFTS: Gift[] = [
-  { id: 'book', label: '一本旧书', icon: '书', affinity: 2.5, mood: 8 },
-  { id: 'tea', label: '一杯热茶', icon: '茶', affinity: 2.2, mood: 10, bonusLine: '……还是温的。' },
-  { id: 'cake', label: '小蛋糕', icon: '糕', affinity: 2.8, mood: 14, bonusLine: '甜的。' },
-  { id: 'scarf', label: '织好的围巾', icon: '巾', affinity: 3.5, mood: 12, bonusLine: '……你织的？' },
-  { id: 'game', label: '新游戏卡带', icon: '卡', affinity: 2.4, mood: 9 },
+  { id: 'book', label: '一本旧书', icon: '书', affinity: 25, mood: 8 },
+  { id: 'tea', label: '一杯热茶', icon: '茶', affinity: 22, mood: 10, bonusLine: '……还是温的。' },
+  { id: 'cake', label: '小蛋糕', icon: '糕', affinity: 28, mood: 14, bonusLine: '甜的。' },
+  { id: 'scarf', label: '织好的围巾', icon: '巾', affinity: 35, mood: 12, bonusLine: '……你织的？' },
+  { id: 'game', label: '新游戏卡带', icon: '卡', affinity: 24, mood: 9 },
 ];
 
 export function resolveGift(gift: Gift, save: SaveData): TouchResult {
@@ -121,7 +123,7 @@ export function resolveGift(gift: Gift, save: SaveData): TouchResult {
     moodDelta: Math.round(gift.mood * mult * 10) / 10,
     weight: 3,
     summary: `你送了${t}${gift.label}。`,
-    memorable: gift.affinity >= 3,
+    memorable: gift.affinity >= 30,
   };
 }
 
@@ -145,7 +147,7 @@ export const ACTIVITIES: ActivityDef[] = [
     label: '一起看书',
     icon: '读',
     activity: 'reading',
-    affinity: 1.8,
+    affinity: 18,
     mood: 8,
     line: '……往左一点，我看不清。',
     summary: '你们肩并肩看了一会儿书。',
@@ -155,7 +157,7 @@ export const ACTIVITIES: ActivityDef[] = [
     label: '一起打游戏',
     icon: '玩',
     activity: 'playing_game',
-    affinity: 2.2,
+    affinity: 22,
     mood: 12,
     line: '这把不算，我手滑。',
     summary: '你们一起打了一局游戏。',
@@ -165,7 +167,7 @@ export const ACTIVITIES: ActivityDef[] = [
     label: '一起做饭',
     icon: '厨',
     activity: 'cooking',
-    affinity: 2.4,
+    affinity: 24,
     mood: 10,
     line: '你来切菜，我来煮。',
     summary: '你们一起做了顿饭。',
@@ -175,7 +177,7 @@ export const ACTIVITIES: ActivityDef[] = [
     label: '靠一会儿',
     icon: '靠',
     activity: 'resting',
-    affinity: 3.2,
+    affinity: 32,
     mood: 9,
     line: '……别动，就这样待一会儿。',
     summary: '你们安静地靠在一起待了一会儿。',
@@ -185,7 +187,7 @@ export const ACTIVITIES: ActivityDef[] = [
     label: '出门散步',
     icon: '走',
     activity: 'stretching',
-    affinity: 2,
+    affinity: 20,
     mood: 11,
     line: '外面挺舒服的。',
     summary: '你们一起出门散了步。',
@@ -200,28 +202,42 @@ export function resolveActivity(def: ActivityDef, _save: SaveData): TouchResult 
     moodDelta: def.mood,
     weight: 3,
     summary: def.summary,
-    memorable: def.affinity >= 3,
+    memorable: def.affinity >= 30,
   };
 }
 
-/** 互动后的通用反馈：亲密度越高，同样互动收益递减 */
+/**
+ * 互动后的通用反馈：关系进展越高，同样互动收益递减。
+ *
+ * 除了加数值，这里还会把这次互动作为一种"经历"写进 traits——
+ * 数值是加法，traits 是改规则，两者不是一件事。
+ */
 export function applyGain(
   save: SaveData,
   affinityDelta: number,
   moodDelta: number,
+  experience: ExperienceKind = 'activity',
 ): void {
   const c = save.character;
-  const softCap = 1 - Math.max(0, c.affinity - 70) / 60;
-  c.affinity = clampNum(c.affinity + affinityDelta * (0.5 + softCap * 0.8), 0, 100);
+  // 收益随关系进展递减：走过 70% 之后开始收敛（和旧版同形，只是分母从 100 换成上限）
+  const softCap = 1 - Math.max(0, c.affinity - AFFINITY_MAX * 0.7) / (AFFINITY_MAX * 0.6);
+  c.affinity = clampNum(c.affinity + affinityDelta * (0.5 + softCap * 0.8), 0, AFFINITY_MAX);
   c.moodValue = clampNum(c.moodValue + moodDelta, 0, 100);
   c.energyValue = clampNum(c.energyValue - moodDelta * 0.25, 0, 100);
   c.interactionCount += 1;
 
   // 心情值映射到情绪标签
-  if (c.moodValue > 82) c.mood = c.affinity > 55 ? 'excited' : 'happy';
+  if (c.moodValue > 82) c.mood = c.affinity > AFFINITY_MAX * 0.55 ? 'excited' : 'happy';
   else if (c.moodValue < 32) c.mood = 'sulky';
   else if (c.energyValue < 28) c.mood = 'sleepy';
   else if (c.mood === 'shy' && c.moodValue > 45) c.mood = 'calm';
+
+  // 这次互动作为一种经历，改写她以后的行为倾向（不是加数值，是改规则）
+  applyExperience(save, experience);
+
+  // 注意：剧情里程碑**不在这里推进**。
+  // 阈值与判定统一在 core/story.ts + store.syncStory()，
+  // 这里再写一遍就会出现两套阈值互相打架的老问题。
 }
 
 export function clampNum(v: number, lo: number, hi: number): number {
