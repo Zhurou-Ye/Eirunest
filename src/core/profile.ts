@@ -83,7 +83,7 @@ const FULL_MOTION_MAP: Partial<Record<Activity, { group: string; index: number }
  * 所以 Mao 必须用 CubismWebSamples 的 4-r.7 tag（moc3 v4），不能用 develop
  * 里的 Mao（moc3 v5，会加载失败）。见 scripts/fetch-live2d-models.mjs 的说明。
  *
- * 人设是为「同居养成」重写的，与模型原设无关。
+ * 人设用于 AI 陪伴与交互叙事原型，与模型原设无关。
  */
 export const PROFILES: CharacterProfile[] = [
   {
