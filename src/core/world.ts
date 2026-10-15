@@ -1,12 +1,13 @@
 /**
  * 世界 / 大地图。
  *
- * 设计参考《爱相随》《左眼计划》《小忍计划》这类二次元日常养成：
+ * 设计参考若干日常模拟类作品的节奏感：
  * 角色有**自己的作息**——上学/上班，会离开小屋去地图上的其他地方；
  * 人不在家时，你只能通过手机联系 TA。地图地点按二次元日常取景命名。
  */
 
 import type { Contact, PersonalityPreset, PlanBlock } from './types';
+import { WITCH, WITCH_ID } from './npc';
 
 export type PlaceKind =
   | 'home'
@@ -32,7 +33,7 @@ export interface Place {
 }
 
 export const PLACES: Place[] = [
-  { id: 'home', name: '小屋', emoji: '🏠', desc: '你们一起住的地方。', kind: 'home', mx: 0.2, my: 0.72 },
+  { id: 'home', name: '小屋', emoji: '🏠', desc: '一个可以安静待着、不用出门的小空间。', kind: 'home', mx: 0.2, my: 0.72 },
   { id: 'school', name: '学校', emoji: '🏫', desc: '上课、社团、午休的地方。', kind: 'school', mx: 0.7, my: 0.24 },
   { id: 'office', name: '公司', emoji: '🏢', desc: '上班的地方，一坐一整天。', kind: 'office', mx: 0.78, my: 0.4 },
   { id: 'cafe', name: '街角咖啡店', emoji: '☕', desc: '安静，适合发呆和等人。', kind: 'cafe', mx: 0.44, my: 0.5 },
@@ -41,6 +42,7 @@ export const PLACES: Place[] = [
   { id: 'station', name: '车站', emoji: '🚉', desc: '早高峰人挤人，通勤必经。', kind: 'station', mx: 0.5, my: 0.14 },
   { id: 'arcade', name: '游戏厅', emoji: '🎮', desc: '灯很亮，抓娃娃机永远差一点点。', kind: 'arcade', mx: 0.84, my: 0.66 },
   { id: 'bookstore', name: '旧书店', emoji: '📚', desc: '有股纸的味道，能待一整个下午。', kind: 'bookstore', mx: 0.36, my: 0.28 },
+  { id: 'witch-workshop', name: '女巫工坊', emoji: '🔮', desc: '复古魔法和现代仪器挤在一起的奇妙工坊。', kind: 'cafe', mx: 0.12, my: 0.22 },
 ];
 
 export function getPlace(id: string): Place {
@@ -148,6 +150,16 @@ export interface JobDef {
 
 export const JOBS: JobDef[] = [
   {
+    id: 'witch-workshop',
+    placeId: 'witch-workshop',
+    name: '女巫工坊助理',
+    emoji: '🔮',
+    seconds: 18,
+    pay: 160,
+    open: [9, 22],
+    desc: '整理仪器与魔法材料。时薪很高，偶尔能听到一点旧事。',
+  },
+  {
     id: 'convenience',
     placeId: 'store',
     name: '便利店店员',
@@ -211,27 +223,31 @@ function rngFrom(seed: number): () => number {
 }
 
 /** 空闲时 TA 会想去哪（按性格给不同偏好） */
-const WANT_POOL: Record<PersonalityPreset, { placeId: string; label: string }[]> = {
+export const WANT_POOL: Record<PersonalityPreset, { placeId: string; label: string }[]> = {
   sunny: [
     { placeId: 'arcade', label: '去游戏厅疯一会儿' },
     { placeId: 'park', label: '去河滨公园走走' },
     { placeId: 'cafe', label: '去咖啡店吃点甜的' },
     { placeId: 'bookstore', label: '去旧书店翻翻' },
+    { placeId: 'witch-workshop', label: '去女巫工坊看新奇玩意儿' },
   ],
   gentle: [
     { placeId: 'bookstore', label: '去旧书店待着' },
     { placeId: 'cafe', label: '去咖啡店安静坐会儿' },
     { placeId: 'park', label: '去公园散步' },
+    { placeId: 'witch-workshop', label: '去女巫工坊问点事' },
   ],
   cool: [
     { placeId: 'bookstore', label: '去旧书店' },
     { placeId: 'station', label: '去车站附近逛逛' },
     { placeId: 'cafe', label: '去咖啡店' },
+    { placeId: 'witch-workshop', label: '去女巫工坊待着' },
   ],
   clingy: [
     { placeId: 'cafe', label: '去咖啡店' },
     { placeId: 'park', label: '去公园' },
     { placeId: 'store', label: '去便利店买点东西' },
+    { placeId: 'witch-workshop', label: '去女巫工坊转一圈' },
   ],
 };
 
@@ -248,8 +264,13 @@ export function buildHerPlan(opts: {
   weekday: number;
   day: number;
   energy: number;
+  /**
+   * 「今天想出门」的倍率（1 = 中性），由 traits 推出来。
+   * 让日程本身也被经历影响：被回应得多、戒备心低下去的她，会明显更愿意往外跑。
+   */
+  outgoingBias?: number;
 }): PlanBlock[] {
-  const { profileId, life, job, personality, weekday, day, energy } = opts;
+  const { profileId, life, job, personality, weekday, day, energy, outgoingBias = 1 } = opts;
   const rnd = rngFrom(hashStr(`${profileId}#${day}`));
   const weekend = weekday === 0 || weekday === 6;
   const blocks: PlanBlock[] = [];
@@ -290,7 +311,9 @@ export function buildHerPlan(opts: {
   const pool = WANT_POOL[personality] ?? WANT_POOL.gentle;
   let chance = weekend ? 0.78 : 0.42;
   chance *= 0.7 + (energy / 100) * 0.6; // 有精神才想出门
+  chance *= outgoingBias; // 经历改变了"想不想出门"这件事本身
   if (personality === 'clingy') chance *= 0.7;
+  chance = Math.max(0.05, Math.min(0.95, chance));
 
   for (const g of gaps) {
     const len = g.e - g.s;
@@ -329,58 +352,131 @@ export function describePlan(blocks: PlanBlock[]): string {
 
 // ── 微信 / 通讯录 ──────────────────────────────────────
 
-/** 她的通讯录：你 + 家人 + 同学/同事 */
-export function herContacts(life: LifeType, playerName: string): Contact[] {
-  const list: Contact[] = [
-    { id: 'me', name: playerName || '你', emoji: '🧡', note: '一起住的人' },
-    { id: 'mom', name: '妈妈', emoji: '👩', note: '家人' },
+/**
+ * 她的通讯录。
+ * 除了玩家，**女巫是她本来就认识的人**——外婆生前的闺蜜，她从小叫阿姨。
+ * 所以她不必"偶遇"才认识女巫；而玩家那边要靠出门遇到才会加到这个好友，
+ * 两边不是一回事（见 hud 的 contactsOf 会按 id 去重）。
+ */
+export function herContacts(playerName: string): Contact[] {
+  return [
+    { id: 'me', name: playerName || '你', emoji: '🧡', note: '' },
+    { id: WITCH_ID, name: WITCH.name, emoji: '🔮', note: '外婆的老朋友' },
   ];
-  if (life === 'student') {
-    list.push({ id: 'friend', name: '小夏', emoji: '🌸', note: '同班，话很多' });
-    list.push({ id: 'club', name: '社团群', emoji: '🎈', note: '6 人' });
-  } else {
-    list.push({ id: 'colleague', name: '阿哲', emoji: '🧢', note: '同部门同事' });
-    list.push({ id: 'boss', name: '组长', emoji: '📋', note: '工作' });
-  }
-  return list;
 }
 
 /** 我的通讯录 */
 export function myContacts(herName: string): Contact[] {
-  return [
-    { id: 'her', name: herName, emoji: '🌙', note: '住在一起' },
-    { id: 'mom', name: '妈妈', emoji: '👩', note: '家人' },
-    { id: 'buddy', name: '老周', emoji: '🎧', note: '认识很多年' },
-  ];
+  return [{ id: 'her', name: herName, emoji: '🌙', note: '' }];
 }
 
-/** 她出门时，可能顺手给谁发条消息（她的手机里会看到） */
-export function herOutingMessage(
-  placeId: string,
-  life: LifeType,
-  personality: PersonalityPreset,
-): { contactId: string; text: string } | null {
+/**
+ * 每个地点会认识的人。都不是编的固定 NPC，而是"去了才会遇到"。
+ *
+ * `greet` 可选：她到那儿时会给这个人发的一句招呼。有专属说法的人写 `greet`，没写就用通用句。
+ */
+export type PlacePerson = Contact & { placeId: string; greet?: string };
+
+export const PLACE_PEOPLE: Record<string, PlacePerson> = {
+  school: { id: 'p-xiaxia', placeId: 'school', name: '同班的小夏', emoji: '🌸', note: '同班，话很多' },
+  office: { id: 'p-azhe', placeId: 'office', name: '阿哲', emoji: '🧢', note: '同部门同事' },
+  cafe: { id: 'p-youzi', placeId: 'cafe', name: '咖啡店的柚子', emoji: '🍊', note: '总在擦杯子' },
+  store: { id: 'p-dianzhang', placeId: 'store', name: '便利店店长', emoji: '🧰', note: '夜班熟客都认识' },
+  park: { id: 'p-xuejie', placeId: 'park', name: '喂猫的学姐', emoji: '🐱', note: '河边总在喂猫' },
+  bookstore: { id: 'p-shuzhu', placeId: 'bookstore', name: '旧书店店主', emoji: '📖', note: '知道每本书在哪' },
+  arcade: { id: 'p-changle', placeId: 'arcade', name: '游戏厅常客', emoji: '🕹️', note: '抓娃娃很准' },
+  station: { id: 'p-shangfan', placeId: 'station', name: '车站的商贩', emoji: '🍢', note: '早班车总有他' },
+  // 女巫是主线关键人物：跨界转换器就是她做出来的。
+  // 不进这张表，她就只是个"地点 + 一份打工 + 一句台词"，玩家永远认识不到这个人。
+  'witch-workshop': {
+    id: 'p-witch',
+    placeId: 'witch-workshop',
+    name: '女巫阿姨',
+    emoji: '🔮',
+    note: '工坊里做转换器的人',
+    greet: '东西在里面响，要听就进来看。',
+  },
+};
+
+/** 某个地点能认识到的人（家里没有） */
+export function personAt(placeId: string): PlacePerson | null {
+  return PLACE_PEOPLE[placeId] ?? null;
+}
+
+/** 相册里真实生成的照片（按地点）。缺的地点退化成配色卡片 */
+export const ALBUM_IMG: Record<string, string> = {
+  school: '/album/school.jpg',
+  office: '/album/office.jpg',
+  cafe: '/album/cafe.jpg',
+  store: '/album/store.jpg',
+  park: '/album/park.jpg',
+  arcade: '/album/arcade.jpg',
+  bookstore: '/album/bookstore.jpg',
+  station: '/album/station.jpg',
+};
+
+/** 她发微信状态时可能选的（按地点）：状态词 + 一句感受 */
+export const PLACE_STATUS: Record<string, [string, string, string][]> = {
+  school: [
+    ['📚', '上课', '今天下午的课好难熬'],
+    ['📝', '随堂测', '考完只想趴一会儿'],
+    ['🎒', '放学', '天还亮着，不想马上回去'],
+  ],
+  office: [
+    ['💼', '搬砖', '一整天对着表格，眼睛酸'],
+    ['☕', '续命', '第三杯了，还是困'],
+    ['🧾', '周报', '写着写着就走神了'],
+  ],
+  cafe: [
+    ['☕', '发呆', '看着窗外发了十分钟呆'],
+    ['🍰', '吃甜', '这块蛋糕值得专门来一趟'],
+  ],
+  store: [
+    ['🏪', '打工', '站了一整天，腿快不是我的了'],
+    ['🍙', '夜班', '关东煮今天居然打折'],
+  ],
+  park: [
+    ['🌳', '散步', '河边风很舒服，走了两圈'],
+    ['🐱', '喂猫', '那只花猫今天居然肯让我摸'],
+  ],
+  bookstore: [
+    ['📖', '淘书', '翻到一本旧版，老板说只此一本'],
+    ['🤫', '安静', '这里安静得能听见翻页声'],
+  ],
+  arcade: [
+    ['🎮', '上瘾', '又差一点点就抓到那个娃娃'],
+    ['🕹️', '投币', '手气好得不像话'],
+  ],
+  station: [
+    ['🚉', '等车', '车又晚点，风好大'],
+    ['🍢', '垫肚子', '先吃点东西再回去'],
+  ],
+  'witch-workshop': [
+    ['🔮', '工坊', '满屋子都是会自己响的小东西'],
+    ['🕯️', '听事', '她只说了半句，剩下让我自己想'],
+  ],
+  home: [
+    ['🏠', '在家', '房间很安静，懒得动'],
+    ['🛏️', '躺平', '今天什么都不想做'],
+    ['🍳', '做饭', '试着做了个新菜'],
+  ],
+};
+
+/** 她出门时，可能顺手给认识的人发条消息（她的手机里会看到） */
+export function herOutingMessage(placeId: string): { contactId: string; text: string } | null {
+  const person = personAt(placeId);
+  if (!person) return null;
   const pick = <T,>(a: T[]): T => a[Math.floor(Math.random() * a.length)];
-  const friendId = life === 'student' ? 'friend' : 'colleague';
-  switch (placeId) {
-    case 'school':
-      return { contactId: friendId, text: pick(['今天第一节课好困啊', '你在教室吗，帮我占个位', '下课一起去买瓶水？']) };
-    case 'office':
-      return { contactId: friendId, text: pick(['这个会开得也太久了', '表格我改完发你了', '中午一起吃饭？']) };
-    case 'store':
-      return { contactId: friendId, text: pick(['我今天晚班，先不一起走了', '店里关东煮打折，要不要带一份', '站了一天，腿快废了']) };
-    case 'cafe':
-      return { contactId: friendId, text: pick(['这家的拿铁还行', '我在咖啡店坐会儿，晚点回']) };
-    case 'park':
-      return { contactId: friendId, text: pick(['今天风挺舒服的', '在河边走了两圈']) };
-    case 'arcade':
-      return { contactId: friendId, text: pick(['抓娃娃又差一点点', '这游戏厅音效好大声']) };
-    case 'bookstore':
-      return { contactId: friendId, text: pick(['旧书店翻到一本好东西', '在这儿待了一下午']) };
-    case 'station':
-      return { contactId: friendId, text: pick(['车又晚点了', '人好多，挤死我了']) };
-    default:
-      if (personality === 'clingy') return { contactId: 'mom', text: pick(['妈，我今天不出门了', '吃过了，别担心']) };
-      return null;
-  }
+  const byPlace: Record<string, string[]> = {
+    school: ['今天第一节课好困啊', '你在教室吗，帮我占个位', '下课一起去买瓶水？'],
+    office: ['这个会开得也太久了', '表格我改完发你了', '中午一起吃饭？'],
+    cafe: ['这家的拿铁还行', '我在咖啡店坐会儿，晚点回'],
+    store: ['我今天晚班，先不一起走了', '店里关东煮打折，要不要带一份', '站了一天，腿快废了'],
+    park: ['今天风挺舒服的', '在河边走了两圈'],
+    bookstore: ['旧书店翻到一本好东西', '在这儿待了一下午'],
+    arcade: ['抓娃娃又差一点点', '这游戏厅音效好大声'],
+    station: ['车又晚点了', '人好多，挤死我了'],
+    'witch-workshop': ['工坊里那个摆件又在响', '她说转换器还要再等一阵子', '在这儿看了一下午奇怪的仪器'],
+  };
+  return { contactId: person.id, text: pick(byPlace[placeId] ?? ['在干嘛']) };
 }
