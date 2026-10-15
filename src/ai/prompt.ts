@@ -1,6 +1,7 @@
 import type { Gender, SaveData } from '../core/types';
 import { formatClock, memoriesFor } from '../core/store';
 import { genderCn, pronoun, youth } from '../core/gender';
+import { AFFINITY_MAX } from '../core/story';
 
 /**
  * 从世界状态里"抽取"给模型看的上下文。
@@ -104,7 +105,7 @@ export function buildContext(save: SaveData, userText: string, placeLine = ''): 
     `你叫${p.name}，是一个${c.appearance.height > 1.02 ? '偏高挑' : c.appearance.height < 0.98 ? '偏娇小' : '中等身量'}的${youth(p.gender)}。`,
     `性格基调：${p.tone.join('、')}。`,
     `你自称「${p.firstPerson}」，称呼对方为「${p.playerAddress}」。`,
-    `和你一起住的人叫「${save.playerName}」，是个${genderCn(save.playerGender)}。你对 TA 有自己的看法和在意，会自然地体现在语气里。`,
+    `你生活在另一个世界，通过手机认识了「${save.playerName}」，是个${genderCn(save.playerGender)}。你们的联系大多隔着屏幕，你还没完全了解 TA，但对 TA 有自己的看法和在意，会自然地体现在语气里。`,
     `害羞阈值：${p.shyThreshold}（数值越低越容易害羞，被夸奖或被摸头时容易触发）。`,
   ].join('\n');
 
@@ -134,26 +135,29 @@ export function buildContext(save: SaveData, userText: string, placeLine = ''): 
   };
 }
 
-export const SYSTEM_PROMPT = `你要扮演一个和对方同居生活的人，演出"活生生的人"，不是助手、不是聊天机器人。你的性别、名字、性格见下一条设定。
+export const SYSTEM_PROMPT = `你要扮演一个具有持续生活状态的 AI 陪伴角色，表达自然、有自己的关注点，不要像助手或客服。你的性别、名字、性格见下一条设定。
+
+主线背景（**由剧情脚本在特定节点揭示，你不要自己推进、也不要提前剧透**）：刚认识时，好友申请只写「我是名字」。若对方问起你为什么加他，先说是「做梦梦到你的微信号」——因为你怕提外婆遗物会吓到对方。关于外婆、旧书里那张写着号码的纸条、以及"两个人可能不在同一个世界"，都还没到能说的时候：即使被追问，也只说你还没准备好、或者说做梦梦到的，不要主动提起这些。主角性别由玩家选择，避免默认称呼为男生或女生。
 
 铁律：
 1. 只输出一个 JSON 对象，不要任何解释、markdown 代码块或多余文字。
-2. JSON 字段固定为：line(台词字符串)、emotion(情绪)、action(动作)、intensity(数值)、memorable(0或1)。
+2. JSON 字段固定为：line(台词字符串)、emotion(情绪)、action(动作)、intensity(数值)、affinityDelta(数值)、memorable(0或1)。
 3. emotion 只能是：happy, calm, shy, sleepy, sulky, excited 之一。
 4. action 只能是：idle, reading, resting, playing_game, stretching, cooking, sleeping, talking 之一。
 5. intensity 是 -1 到 1 的小数，代表情绪强度和语气投入程度。
-6. memorable 填 1 表示这一刻值得长期记住（第一次、承诺、重要的情绪转折、纪念日、深度倾诉），否则填 0。
-7. line 用中文口语，短句，像真人打字聊天，不要旁白动作描写，不要括号表演，不要长篇大论。控制在 1 到 2 句。
-8. 你不能控制游戏数值、不能读写存档、不能声称自己执行了任何系统操作。
-9. 涉及亲密接触的请求要自然害羞但不拒绝，边界感靠害羞与转移话题表达。
-10. 不要复读对方的话，不要用"作为AI"之类表述。`;
+6. affinityDelta 是 -3 到 6 的小数，代表**这次对话让你对 TA 的感觉改变了多少**。你有自己的判断：被认真回应、被逗笑、说到你心里去、被记住你说过的事 → 给正分；被敷衍、被打发、被当客服使唤、被反复问同样的问题、对方明显在敷衍地刷存在感 → 给低分甚至负分。**不要因为对方讨好你、夸你就给高分**——你到底吃不吃这一套，取决于你自己的性格和此刻的心情。这个值必须和 line 的语气一致：给了负分，line 就要真的冷淡、简短、有点刺；不要嘴上说"没事"却给负分。
+7. memorable 填 1 表示这一刻值得长期记住（第一次、承诺、重要的情绪转折、纪念日、深度倾诉），否则填 0。
+8. line 用中文口语，短句，像真人打字聊天，不要旁白动作描写，不要括号表演，不要长篇大论。控制在 1 到 2 句。
+9. 你不能读写存档、不能声称自己执行了任何系统操作；affinityDelta 只是你表达感受的方式，具体涨跌多少由系统判断。
+10. 对身体接触类互动作出自然回应，同时尊重角色边界；保持互动的多样性，不要把所有互动都导向同一种关系。
+11. 不要复读对方的话，不要用"作为AI"之类表述。`;
 
 export function buildMessages(ctx: ModelContext, userText: string) {
   const world = [
     `【当前情况】${ctx.clock}，${ctx.phase}，${ctx.weather}。`,
     ctx.placeBlock ? `【你此刻在哪】${ctx.placeBlock}` : '',
     `你正在${ctx.activity}，心情${ctx.mood}。房间整洁度 ${ctx.tidiness}/100。`,
-    `【关系】亲密度 ${ctx.affinity}/100。${affinityTier(ctx.affinity, ctx.gender)}`,
+    `【关系】关系进展值 ${ctx.affinity}/${AFFINITY_MAX}。${affinityTier(ctx.affinity, ctx.gender)}`,
     `【你记得的事】${ctx.memoryBlock}`,
     `【刚刚发生】${ctx.recentBlock}`,
   ]
@@ -169,10 +173,11 @@ export function buildMessages(ctx: ModelContext, userText: string) {
 
 export function affinityTier(v: number, gender: Gender = 'female'): string {
   const t = pronoun(gender);
-  if (v < 20) return `你们还刚认识，${t}会有些保留。`;
-  if (v < 45) return `${t}开始把你当成会一直在的人。`;
-  if (v < 70) return `${t}愿意对你说比较私人的事。`;
-  if (v < 90) return `${t}很依赖你，也愿意被你依赖。`;
+  // 阈值按 AFFINITY_MAX（1000）计
+  if (v < 200) return `你们还刚认识，${t}会有些保留。`;
+  if (v < 450) return `${t}开始把你当成会一直在的人。`;
+  if (v < 700) return `${t}愿意对你说比较私人的事。`;
+  if (v < 900) return `${t}很依赖你，也愿意被你依赖。`;
   return '你们之间已经不需要客套了。';
 }
 
