@@ -7,6 +7,7 @@ import {
   type ModelEmotion,
   type Mood,
 } from '../core/types';
+import { AFFINITY_DELTA_MAX, AFFINITY_DELTA_MIN, AFFINITY_MAX } from '../core/story';
 
 /**
  * 模型输出的唯一出口。
@@ -100,6 +101,16 @@ export function sanitizeIntent(
   }
   intensity = clamp(intensity, -1, 1);
 
+  // affinityDelta：她对这次互动的真实感受。
+  // 缺失（老模型没吐这个字段）时给一个**温和的小正值**——
+  // 不能默认 0，那会让所有对话都变成"聊了等于没聊"。
+  let affinityDelta = Number(o.affinityDelta);
+  if (!Number.isFinite(affinityDelta)) {
+    affinityDelta = 0.6;
+    repaired.push('affinityDelta');
+  }
+  affinityDelta = clamp(affinityDelta, AFFINITY_DELTA_MIN, AFFINITY_DELTA_MAX);
+
   // memorable：只认 0/1
   let memorable: 0 | 1 = o.memorable === 1 || o.memorable === '1' ? 1 : 0;
 
@@ -109,6 +120,7 @@ export function sanitizeIntent(
       emotion: emotion as ModelEmotion,
       action: action as ModelAction,
       intensity: Math.round(intensity * 100) / 100,
+      affinityDelta: Math.round(affinityDelta * 10) / 10,
       memorable,
     },
     repaired,
@@ -125,11 +137,14 @@ export function reconcileAction(action: ModelAction, hour: number, energy: numbe
 }
 
 /**
- * 亲密度与强度共同决定是否害羞。
+ * 关系进展与强度共同决定是否害羞。
  *
- * shyThreshold 的语义是「亲密度为 0 时，多强的正面刺激会让她脸红」。
- * 强度 1.0 + 亲密度 0 → shyPressure = 1，超过任何阈值 ⇒ 一定害羞；
- * 亲密度升高时压力下降，到 80 以上不再被外力触发害羞，只由模型显式决定。
+ * shyThreshold 的语义是「关系进展为 0 时，多强的正面刺激会让她脸红」。
+ * 强度 1.0 + 关系进展 0 → shyPressure = 1，超过任何阈值 ⇒ 一定害羞；
+ * 关系进展升高时压力下降，到 90% 以上不再被外力触发害羞，只由模型显式决定。
+ *
+ * 注意分母是 AFFINITY_MAX（1000）而不是 100 —— 关系数值换过口径，
+ * 这里如果还按 100 算，p 会瞬间饱和成 1，外力就再也不会让她害羞了。
  */
 export function resolveMood(
   emotion: ModelEmotion,
@@ -138,9 +153,9 @@ export function resolveMood(
   shyThreshold: number,
 ): Mood {
   if (emotion === 'shy') return 'shy';
-  const p = Math.max(0, Math.min(1, affection / 100));
-  // 压力随强度线性增长，随亲密度二次衰减：低亲密度时极易脸红
+  const p = Math.max(0, Math.min(1, affection / AFFINITY_MAX));
+  // 压力随强度线性增长，随关系进展二次衰减：刚认识时极易脸红
   const shyPressure = Math.max(0, intensity) * (1 - p) * (1 - p * 0.6);
-  if (shyPressure > shyThreshold && affection < 80) return 'shy';
+  if (shyPressure > shyThreshold && affection < AFFINITY_MAX * 0.8) return 'shy';
   return emotion as Mood;
 }
