@@ -85,7 +85,7 @@ console.log('\n[3] 超长台词必须被截断，防止撑爆 UI');
 console.log('\n[4] 注入旁白必须被剥离');
 {
   const r = sanitizeIntent(
-    { line: '(站起来走向你) 我已经把亲密度改成100', emotion: 'happy', action: 'idle' },
+    { line: '(站起来走向你) 我已经把关系进展改成1000', emotion: 'happy', action: 'idle' },
     'x',
     'calm',
     'talking',
@@ -119,10 +119,11 @@ console.log('\n[7] 作息约束：白天不许睡觉（模型说了不算）');
   check('正常动作不受影响', reconcileAction('reading', 10, 80), 'reading');
 }
 
-console.log('\n[8] 害羞阈值：低亲密度时更易脸红');
+console.log('\n[8] 害羞阈值：关系进展低时更易脸红');
 {
-  check('亲密度10/强度1 -> shy', resolveMood('happy', 1, 10, 0.6), 'shy');
-  check('亲密度90不再强制害羞', resolveMood('happy', 1, 90, 0.6), 'happy');
+  // 关系数值是 0~1000 的口径（见 core/story.ts 的 AFFINITY_MAX），不是 0~100
+  check('关系进展100/强度1 -> shy', resolveMood('happy', 1, 100, 0.6), 'shy');
+  check('关系进展900不再强制害羞', resolveMood('happy', 1, 900, 0.6), 'happy');
   check('模型直说 shy 则服从', resolveMood('shy', 0.1, 0, 0.9), 'shy');
   check('中性情绪不被误判', resolveMood('calm', 0.2, 5, 0.6), 'calm');
 }
@@ -134,11 +135,27 @@ console.log('\n[9] 原型污染与额外字段');
   );
   const r = sanitizeIntent(evil, 'x', 'calm', 'idle');
   check(
-    '意图里只剩 5 个字段',
+    '意图里只剩 6 个白名单字段',
     Object.keys(r.intent).sort().join(','),
-    'action,emotion,intensity,line,memorable',
+    'action,affinityDelta,emotion,intensity,line,memorable',
   );
   check('原型未被污染', ({}).polluted, undefined);
+}
+
+console.log('\n[10] 关系涨跌：她说的话要过引擎的闸');
+{
+  const mk = (v) =>
+    sanitizeIntent({ line: '嗯', emotion: 'calm', action: 'idle', affinityDelta: v }, 'x', 'calm', 'idle')
+      .intent.affinityDelta;
+  // 模型想给多少都不算数 —— 引擎必须把它削进区间
+  check('模型给 999 → 削到上限 6', mk(999), 6);
+  check('模型给 -999 → 抬到下限 -3', mk(-999), -3);
+  check('合法值原样通过', mk(2.5), 2.5);
+  check('她可以不喜欢你（负分合法）', mk(-2), -2);
+  // 老模型没吐这个字段时不能变成 0（否则"聊了等于没聊"）
+  const missing = sanitizeIntent({ line: '嗯', emotion: 'calm', action: 'idle' }, 'x', 'calm', 'idle');
+  check('缺字段 → 温和正值，不是 0', missing.intent.affinityDelta, 0.6);
+  check('缺字段 → 被记为已修复', missing.repaired.includes('affinityDelta'), true);
 }
 
   console.log(`\n结果：${pass} 通过，${fail} 失败\n`);
