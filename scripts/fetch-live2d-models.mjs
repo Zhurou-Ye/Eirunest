@@ -30,7 +30,9 @@ const API = `https://api.github.com/repos/${REPO}/git/trees/${BRANCH}?recursive=
 const CDN = `https://cdn.jsdelivr.net/gh/${REPO}@${BRANCH}`;
 
 // 全部官方免费样例：女性 4 + 男性 3 + 狗 1 —— 4-r.7 里实际存在的是下面这些
-const MODELS = ['Haru', 'Mao', 'Natori', 'Hiyori', 'Mark', 'Rice'];
+// 只留能用的三套：都有 Head+Body 双 HitArea、且 moc3 版本 ≤ 4。
+// Hiyori 只有 Body 一个触点，Mark 无表情无触点，Ren 在软件渲染下 shader 超限——都已撤下。
+const MODELS = ['Haru', 'Mao', 'Natori'];
 
 const wanted = process.argv.slice(2);
 const list = wanted.length ? wanted : MODELS;
