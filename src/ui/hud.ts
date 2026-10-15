@@ -4,7 +4,10 @@ import { pronoun } from '../core/gender';
 import type { TouchKind } from '../core/interaction';
 import { PROFILES } from '../core/profile';
 import { ACCESSORIES, SLOT_LABEL } from '../core/shop';
+import { describeTraits, evolutionLine } from '../core/evolution';
+import { AFFINITY_MAX, PHYSICAL_COST, STORY } from '../core/story';
 import {
+  ALBUM_IMG,
   JOBS,
   PLACES,
   describePlan,
@@ -15,7 +18,15 @@ import {
   jobHoursText,
   myContacts,
 } from '../core/world';
-import type { ChatMsg, Contact, DialogueTurn, PlanBlock, PlayerGender, SaveData } from '../core/types';
+import type {
+  ChatMsg,
+  Contact,
+  DialogueTurn,
+  PlanBlock,
+  PlayerGender,
+  SaveData,
+  WxStatus,
+} from '../core/types';
 import type { LlmConfig } from '../ai/client';
 
 /**
@@ -59,6 +70,16 @@ export interface UICallbacks {
   onSaveMyPlan(blocks: PlanBlock[]): void;
   /** 打开某个会话（用于清未读） */
   onReadThread(owner: 'her' | 'me', contactId: string): void;
+  /** 把认识的人加进通讯录；remark 为玩家设的备注名 */
+  onAddContact(id: string, remark?: string): void;
+  /** 换头像（两部手机同步） */
+  onSetAvatar(owner: 'her' | 'me', emoji: string): void;
+  /** 发/结束微信状态 */
+  onSetStatus(owner: 'her' | 'me', s: WxStatus | null): void;
+  /** 购买实体（800 金币 + 阶段 2） */
+  onBuyPhysical(): boolean;
+  /** 相机：在当前地点拍一张，存进相册 */
+  onShoot(placeId: string): void;
 }
 
 export type PanelName =
@@ -99,9 +120,15 @@ export interface UI {
   setProfileId(id: string): void;
   /** 打开某个面板，同时关掉其他面板 */
   openPanel(name: PanelName | null): void;
+  openNewGameContacts(): void;
+  openChatWithHer(): void;
   get openPanelName(): PanelName | null;
   /** 她在哪 / 是否出门 */
   setPresence(p: PresenceInfo): void;
+  /** 主线剧情解锁的独白弹窗（日系台词，N 秒后自动消失） */
+  showStoryMonologue(text: string, title?: string): void;
+  showAddressDialog(): Promise<boolean>;
+  showStoryChoice(title: string, options: string[]): Promise<number>;
 }
 
 const MOOD_LABEL: Record<string, string> = {
@@ -175,7 +202,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           </div>
           <div class="chips">
             <span class="chip-mini coin" id="chip-coins">金币 0</span>
-            <span class="chip-mini" id="chip-aff">亲密 0</span>
+            <span class="chip-mini" id="chip-aff">关系 0</span>
             <span class="chip-mini" id="chip-energy">精力 0</span>
           </div>
         </header>
@@ -223,7 +250,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           </button>
           <button class="drawer-item" data-panel="phone">
             <svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 18h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
-            <span>她的手机</span>
+            <span id="drawer-phone-label">她的手机</span>
           </button>
           <button class="drawer-item" data-panel="myphone">
             <svg viewBox="0 0 24 24"><rect x="7" y="3" width="10" height="18" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M9.5 7h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M10.5 18h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
@@ -249,13 +276,15 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
             <div class="meters">
               <div class="meter"><span class="k">心情</span><div class="bar"><i id="ui-mood-bar"></i></div><span class="v" id="ui-mood-v">0</span></div>
               <div class="meter"><span class="k">精力</span><div class="bar alt"><i id="ui-energy-bar"></i></div><span class="v" id="ui-energy-v">—</span></div>
-              <div class="meter"><span class="k">亲密</span><div class="bar warm"><i id="ui-aff-bar"></i></div><span class="v" id="ui-aff-v">0</span></div>
+              <div class="meter"><span class="k">关系进展</span><div class="bar warm"><i id="ui-aff-bar"></i></div><span class="v" id="ui-aff-v">0</span></div>
             </div>
             <div class="rows">
               <div class="row"><span>正在做</span><b id="ui-activity">—</b></div>
               <div class="row"><span>房间</span><b id="ui-tidy">—</b></div>
               <div class="row"><span>天气</span><b id="ui-weather">—</b></div>
             </div>
+            <div class="env" id="story-progress"></div>
+            <div class="env" id="trait-panel"></div>
             <div class="env">
               <span class="env-label">房间</span>
               <div class="env-btns">
@@ -358,7 +387,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
               <span class="status" id="cfg-status"></span>
               <button class="primary" id="btn-save-cfg">保存</button>
             </div>
-            <p class="hint">存档（记忆、亲密、房间、时间）存在本机浏览器；只有对话内容会发给云端模型生成回复。</p>
+            <p class="hint">存档（记忆、关系进展、房间、时间）存在本机浏览器；只有对话内容会发给云端模型生成回复。</p>
             <button class="ghost wide" id="btn-switch-role">换一个人陪</button>
           </div>
         </div>
@@ -409,12 +438,25 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
   let open: PanelName | null = null;
   let lastSave: SaveData | null = null;
   let lastShopKey = '';
+  let lastStoryKey = '';
+  let lastTraitKey = '';
   let lastCoins = -1;
   let lastGender = '';
+
+  /**
+   * 当前角色的第三人称。
+   * 面向玩家的文案一律走这里 —— Natori 是男性立绘，写死"她"就会把他显示成她。
+   */
+  function tp(save?: SaveData | null): '他' | '她' {
+    const g = (save ?? lastSave)?.character.personality.gender ?? 'female';
+    return pronoun(g);
+  }
   let lastPresence: PresenceInfo | null = null;
   let lastPresenceKey = '';
   /** 时间输入框被用户改过：改过就不要再被时钟回写覆盖，直到点"设定/同步" */
   let timeDirty = false;
+  /** "她的手机"是否已锁（阶段 0 打不开），只在变化时改 DOM */
+  let herPhoneLocked: boolean | null = null;
 
   // ── 选人界面 ────────────────────────────
   const roleList = $<HTMLDivElement>('role-list');
@@ -602,6 +644,28 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     }, 900);
   });
 
+  /**
+   * 全屏看大图 —— 「点开聊天里的图片」用的查看器。
+   * 图本身作为一条消息留在会话里，这里只负责放大看；关掉后聊天记录不动。
+   */
+  function openImageViewer(src: string, title = '图片'): void {
+    document.querySelector('.img-viewer')?.remove();
+    const wrap = document.createElement('div');
+    wrap.className = 'story-mono img-viewer';
+    wrap.innerHTML = `<div class="story-mono-card story-map-card">
+        <div class="story-mono-title">${escapeHtml(title)}</div>
+        <img class="story-map-img" src="${escapeHtml(src)}" alt="" />
+        <button class="story-mono-ok">收起图片</button>
+      </div>`;
+    document.body.appendChild(wrap);
+    const close = (): void => wrap.remove();
+    wrap.querySelector('button')!.addEventListener('click', close);
+    // 点背景也能关，符合看图的直觉
+    wrap.addEventListener('click', (e) => {
+      if (e.target === wrap) close();
+    });
+  }
+
   // ── 实现接口 ────────────────────────────
   const ui: UI = {
     get openPanelName() {
@@ -609,6 +673,11 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     },
 
     openPanel(name: PanelName | null) {
+      // 阶段 0 你还看不见她的世界，也就打不开"她的手机"——只有自己这部
+      if (name === 'phone' && (lastSave?.story?.phase ?? 0) < 1) {
+        this.setBubbleHint(`还看不见${tp()}的手机……`);
+        return;
+      }
       open = name;
       root.querySelectorAll<HTMLElement>('.panel[data-panel]').forEach((p) => {
         p.hidden = p.dataset.panel !== name;
@@ -618,6 +687,10 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       });
       if (name === 'chat') input.focus();
       if (name === 'memory' && lastSave) renderMemories(lastSave);
+      if (name === 'status' && lastSave) {
+        renderStoryProgress(lastSave);
+        renderTraits(lastSave);
+      }
       if (name === 'shop' && lastSave) {
         lastShopKey = '';
         renderShop(lastSave);
@@ -625,6 +698,16 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       if (name === 'map' && lastSave) renderMap(lastSave);
       if (name === 'phone') phones.her.onShow();
       if (name === 'myphone') phones.me.onShow();
+    },
+
+    openNewGameContacts() {
+      this.openPanel('myphone');
+      phones.me.openContacts();
+    },
+
+    openChatWithHer() {
+      this.openPanel('myphone');
+      phones.me.openChat('her');
     },
 
     setBubble(text: string) {
@@ -691,6 +774,68 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       }, 7000);
     },
 
+    showStoryMonologue(text: string, title = '……') {
+      // 移除旧的
+      const old = document.querySelector('.story-mono');
+      if (old) old.remove();
+      const wrap = document.createElement('div');
+      wrap.className = 'story-mono';
+      wrap.innerHTML = `<div class="story-mono-card">
+          <div class="story-mono-title">${escapeHtml(title)}</div>
+          <div class="story-mono-text">${escapeHtml(text)}</div>
+          <button class="story-mono-ok">继续</button>
+        </div>`;
+      document.body.appendChild(wrap);
+      const close = () => {
+        wrap.classList.add('out');
+        window.setTimeout(() => wrap.remove(), 600);
+      };
+      wrap.querySelector('.story-mono-ok')!.addEventListener('click', close);
+      window.setTimeout(close, 9000);
+    },
+
+    showAddressDialog() {
+      return new Promise<boolean>((resolve) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'story-mono';
+        wrap.innerHTML = `<div class="story-mono-card story-choice-card">
+          <div class="story-mono-title">收货地址</div>
+          <div class="story-mono-text">填写一个虚构地址继续剧情。地址只用于本次剧情，不会保存。</div>
+          <input class="story-address-input" maxlength="80" placeholder="例如：星芒市月桂路 12 号" />
+          <button class="story-mono-ok">发送地址</button>
+        </div>`;
+        document.body.appendChild(wrap);
+        const input = wrap.querySelector<HTMLInputElement>('.story-address-input')!;
+        input.focus();
+        wrap.querySelector('button')!.addEventListener('click', () => {
+          const hasValue = input.value.trim().length > 0;
+          if (!hasValue) { input.focus(); return; }
+          input.value = '';
+          wrap.remove();
+          resolve(true);
+        });
+      });
+    },
+
+    showStoryChoice(title, options) {
+      return new Promise((resolve) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'story-mono';
+        wrap.innerHTML = `<div class="story-mono-card story-choice-card">
+          <div class="story-mono-title">${escapeHtml(title)}</div>
+          <div class="story-choice-options">${options.map((option, index) => `<button data-choice="${index}">${escapeHtml(option)}</button>`).join('')}</div>
+        </div>`;
+        document.body.appendChild(wrap);
+        wrap.querySelectorAll<HTMLButtonElement>('[data-choice]').forEach((button) => {
+          button.addEventListener('click', () => {
+            const selected = Number(button.dataset.choice);
+            wrap.remove();
+            resolve(selected);
+          });
+        });
+      });
+    },
+
     tick(save: SaveData) {
       lastSave = save;
       const c = save.character;
@@ -701,6 +846,9 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
         const t = pronoun(c.personality.gender);
         $<HTMLElement>('status-title').textContent = `${t}的状态`;
         $<HTMLElement>('memory-title').textContent = `${t}记得的事`;
+        // 抽屉里的入口标签也要跟着走，否则男性角色会显示"她的手机"
+        const phoneLabel = document.getElementById('drawer-phone-label');
+        if (phoneLabel) phoneLabel.textContent = `${t}的手机`;
       }
       const clockText = formatClock(save.clock);
       if (clockText !== lastClockText) {
@@ -709,12 +857,12 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       }
       $<HTMLSpanElement>('ui-phase').textContent = PHASE_LABEL[c.phase] ?? c.phase;
       $<HTMLSpanElement>('ui-mood').textContent = MOOD_LABEL[c.mood] ?? c.mood;
-      $<HTMLSpanElement>('chip-aff').textContent = `亲密 ${Math.round(c.affinity)}`;
+      $<HTMLSpanElement>('chip-aff').textContent = `关系 ${Math.round(c.affinity)}`;
       $<HTMLSpanElement>('chip-energy').textContent = `精力 ${Math.round(c.energyValue)}`;
 
       $<HTMLElement>('ui-mood-bar').style.width = `${c.moodValue}%`;
       $<HTMLElement>('ui-energy-bar').style.width = `${c.energyValue}%`;
-      $<HTMLElement>('ui-aff-bar').style.width = `${c.affinity}%`;
+      $<HTMLElement>('ui-aff-bar').style.width = `${Math.min(100, (c.affinity / AFFINITY_MAX) * 100)}%`;
       $<HTMLSpanElement>('ui-mood-v').textContent = String(Math.round(c.moodValue));
       $<HTMLSpanElement>('ui-energy-v').textContent = ENERGY_LABEL[c.energy] ?? '';
       $<HTMLSpanElement>('ui-aff-v').textContent = String(Math.round(c.affinity));
@@ -736,11 +884,27 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       // 手机（只看打开着的那台，避免每帧重建 DOM）
       if (open === 'phone') phones.her.refresh(save);
       else if (open === 'myphone') phones.me.refresh(save);
+
+      // 阶段 0 时"她的手机"是锁着的：你还看不见她的世界（只在变化时动 DOM）
+      const herLocked = (save.story?.phase ?? 0) < 1;
+      if (herLocked !== herPhoneLocked) {
+        herPhoneLocked = herLocked;
+        const btn = root.querySelector<HTMLElement>('.drawer-item[data-panel="phone"]');
+        if (btn) {
+          btn.classList.toggle('locked', herLocked);
+          btn.title = herLocked ? '关系进展达到阶段要求后，就能看见对方的手机了' : '';
+        }
+      }
       // 金币显示
       const coins = Math.round(save.coins);
       if (coins !== lastCoins) {
         lastCoins = coins;
         $<HTMLSpanElement>('chip-coins').textContent = `金币 ${coins}`;
+      }
+      // 状态面板：羁绊进度 / 购买实体
+      if (open === 'status') {
+        renderStoryProgress(save);
+        renderTraits(save);
       }
       // 商城打开时，状态变了才重绘（避免每帧重建 DOM）
       if (open === 'shop') {
@@ -822,16 +986,109 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     ul.innerHTML = items.map((m) => `<li>${m.summary}</li>`).join('') || '<li class="empty">还没有</li>';
   }
 
-  // ── 手机：微信 ──────────────────────────
+  /** 在状态面板渲染「羁绊进度 / 购买实体」入口。实体不再是手机 APP，而是功能开关。 */
+  function renderStoryProgress(save: SaveData): void {
+    const el = document.getElementById('story-progress');
+    if (!el) return;
+    const story = save.story;
+    const phase = story.phase;
+    const aff = Math.round(save.character.affinity);
+    const key = `${phase}|${story.hasPhysical ? 1 : 0}|${aff}|${save.coins}`;
+    if (key === lastStoryKey) return;
+    lastStoryKey = key;
+    if (story.hasPhysical) {
+      el.innerHTML = `<span class="env-label">羁绊</span>
+        <div class="story-progress on">
+          <span>✨ 跨界连接已建立</span>
+          <p>近距离互动与共同活动功能已开启。</p>
+        </div>`;
+      return;
+    }
+    if (phase >= 2) {
+      const canBuy = save.coins >= PHYSICAL_COST;
+      el.innerHTML = `<span class="env-label">羁绊</span>
+        <div class="story-progress">
+          <span>女巫工坊的跨界转换器可以试制了</span>
+          <p>关系进展 ${aff} / ${STORY.PHYSICAL} · 金币 ${save.coins} / ${PHYSICAL_COST}</p>
+          <button class="primary wide" id="btn-buy-physical" ${canBuy ? '' : 'disabled'}>${canBuy ? `购买跨界实体转换器（${PHYSICAL_COST} 金币）` : '去女巫工坊打工攒材料费'}</button>
+        </div>`;
+      el.querySelector<HTMLElement>('#btn-buy-physical')?.addEventListener('click', () => {
+        if (cb.onBuyPhysical()) {
+          renderStoryProgress(save);
+          ui.addLog(`${tp(save)}来了。`);
+        }
+      });
+      return;
+    }
+    if (phase >= 1) {
+      el.innerHTML = `<span class="env-label">羁绊</span>
+        <div class="story-progress">
+          <span>你能看见那边的世界了</span>
+          <p>关系进展 ${aff} / ${STORY.PHYSICAL} · 金币 ${save.coins} / ${PHYSICAL_COST}</p>
+          <p class="hint">多聊聊，看看异世界的信号还会不会变清晰。女巫工坊也许有线索。</p>
+        </div>`;
+      return;
+    }
+    // 还没觉醒：下一站是"坦白"（若已过）还是"寄件失败"
+    const nextLabel = story.confessionAt ? '寄件失败' : '坦白';
+    const nextAt = story.confessionAt ? STORY.GIFT_FUMBLE : STORY.CONFESS;
+    el.innerHTML = `<span class="env-label">羁绊</span>
+      <div class="story-progress">
+        <span>你们还隔着一部手机</span>
+        <p>关系进展 ${aff} / ${nextAt}（${nextLabel}）</p>
+        <p class="hint">多聊聊，说不定会解锁异世界的新线索……这算隐藏任务吗？</p>
+      </div>`;
+  }
+
+  /**
+   * 状态面板里的「人格倾向」区。
+   *
+   * 这三条不是设定，是攒出来的：同一副预设，遇到不同的事会长成不同的人。
+   * 把数值和最近一次变动的原因摊开，是为了让"她变了"这件事可见、可回溯，
+   * 而不是只能由开发者口头声称。
+   */
+  function renderTraits(save: SaveData): void {
+    const el = document.getElementById('trait-panel');
+    if (!el) return;
+    const traits = describeTraits(save);
+    const key = `${save.character.personality.preset}|${traits.map((t) => t.value.toFixed(3)).join(',')}|${save.traitHistory.length}`;
+    if (key === lastTraitKey) return;
+    lastTraitKey = key;
+
+    const rows = traits
+      .map(
+        (t) => `<div class="trait-row">
+          <span class="trait-k">${t.label}</span>
+          <div class="trait-bar"><i style="width:${Math.round(t.value * 100)}%"></i></div>
+          <span class="trait-v">${Math.round(t.value * 100)}</span>
+        </div>`,
+      )
+      .join('');
+
+    const recent = save.traitHistory.slice(-2).reverse();
+    const history = recent.length
+      ? recent.map((p) => `<li><i>第${p.day + 1}天</i>${escapeHtml(p.reason)}</li>`).join('')
+      : `<li><i>—</i>还没有什么值得改变${tp(save)}的事</li>`;
+
+    el.innerHTML = `<span class="env-label">人格倾向（会被经历改写）</span>
+      <div class="trait-box">
+        ${rows}
+        <p class="trait-note">${escapeHtml(evolutionLine(save))}</p>
+        <div class="trait-idx">最近让${tp(save)}变了一点的事</div>
+        <ul class="trait-hist">${history}</ul>
+      </div>`;
+  }
+
+  // ── 手机：主屏 APP + 微信 ────────────────
   const MOMENT_KIND: Record<string, string> = {
     outing: '出门了',
     diary: '日记',
     gift: '收到了礼物',
     event: '日常',
-    mine: '我发的',
+    mine: '我拍的',
   };
 
-  /** 每个地点的"照片"配色（不依赖生图，纯 CSS 渐变拼出来的照片卡） */
+  /** 每个地点的"照片"配色（没有生成图时退化成配色卡片） */
   const PLACE_ART: Record<string, [string, string, string]> = {
     home: ['#3a2b23', '#241a15', '🏠'],
     school: ['#8fb4cf', '#c9d9e4', '🏫'],
@@ -842,35 +1099,79 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     station: ['#8b8f9c', '#c3c8d2', '🚉'],
     arcade: ['#7a5cae', '#e07ba8', '🎮'],
     bookstore: ['#8a6a4f', '#d3b189', '📚'],
+    'witch-workshop': ['#4a3a6b', '#b08fd0', '🔮'],
     walk: ['#7d8f9c', '#c2ccd4', '🚶'],
   };
 
-  function presenceEmoji(): string {
-    return lastPresence?.emoji ?? '🏠';
-  }
+  /** 可选头像（两部手机共用同一批） */
+  const AVATARS = ['🧑', '🌸', '🌙', '🐱', '🍞', '🎧', '🦊', '🐰', '🌿', '⭐', '🍵', '🧸'];
+
+  /** 微信状态词（参考微信状态：心情想法 / 工作学习 / 活动 / 休息） */
+  const STATUS_WORDS: { emoji: string; word: string }[] = [
+    { emoji: '😴', word: '困' },
+    { emoji: '📚', word: '学习' },
+    { emoji: '☕', word: '发呆' },
+    { emoji: '🏃', word: '忙' },
+    { emoji: '🎮', word: '玩游戏' },
+    { emoji: '😤', word: '烦' },
+    { emoji: '🥰', word: '美滋滋' },
+    { emoji: '🌧️', word: '下雨' },
+    { emoji: '🛏️', word: '躺平' },
+    { emoji: '🍳', word: '做饭' },
+    { emoji: '🛒', word: '买东西' },
+    { emoji: '🎧', word: '听歌' },
+  ];
 
   const WEEKDAY_CN = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-  void WEEKDAY_CN;
 
   function escapeHtml(s: string): string {
     return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] as string);
   }
 
-  /** 通讯录：她的 / 我的 —— 在 createPhone 内按 owner 取 */
+  /** 微信状态：24 小时后自动过期（跟真微信一样） */
+  function activeStatus(s: WxStatus | null): WxStatus | null {
+    if (!s) return null;
+    if (!lastSave || lastSave.clock - s.at > 24) return null;
+    return s;
+  }
 
-  type PhonePage = 'chats' | 'contacts' | 'discover' | 'me' | 'chat' | 'moments' | 'album' | 'diary' | 'schedule';
+  type PhonePage =
+    | 'home'
+    | 'wechat'
+    | 'album'
+    | 'diary'
+    | 'schedule'
+    | 'camera'
+    | 'weather';
+  type WxPage =
+    | 'chats'
+    | 'contacts'
+    | 'discover'
+    | 'me'
+    | 'chat'
+    | 'moments'
+    | 'newfriends'
+    | 'onlychat'
+    | 'avatar'
+    | 'status'
+    | 'remark';
 
   interface PhoneCtl {
     onShow(): void;
     refresh(save: SaveData): void;
     notifyHerMsg(): void;
     openChat(contactId: string): void;
+    openContacts(): void;
   }
 
   /**
-   * 一台手机。owner='her' → 她的手机（她联系别人，你只能看）；
-   * owner='me' → 我的手机（我发消息 / 写日记 / 排日程 / 发朋友圈，她会回复）。
-   * 两台共用同一套微信布局：微信 / 通讯录 / 发现 / 我。
+   * 一台手机。
+   *
+   * owner='her' → 她的手机：微信里是她和认识的人的聊天，只读；
+   * owner='me' → 我的手机：能给她发消息、写日记、排日程、发朋友圈、发状态。
+   *
+   * 结构：主屏（APP 宫格）→ 点进「微信」才是微信（消息 / 通讯录 / 发现 / 我）。
+   * 两台手机共用同一个组件，头像和状态读同一份存档，所以换头像会同步。
    */
   function createPhone(owner: 'her' | 'me'): PhoneCtl {
     const panel = root.querySelector<HTMLElement>(
@@ -898,7 +1199,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
             </div>
           </div>
           <nav class="wx-tabs">
-            <button data-tab="chats" class="on"><span>💬</span><em>微信</em><i class="wx-dot" hidden></i></button>
+            <button data-tab="chats" class="on"><span>💬</span><em>消息</em><i class="wx-dot" hidden></i></button>
             <button data-tab="contacts"><span>👥</span><em>通讯录</em></button>
             <button data-tab="discover"><span>🧭</span><em>发现</em></button>
             <button data-tab="me"><span>🙂</span><em>我</em></button>
@@ -914,31 +1215,62 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     const input = panel.querySelector<HTMLInputElement>('.wx-input')!;
     const tabs = panel.querySelector<HTMLElement>('.wx-tabs')!;
     const dot = panel.querySelector<HTMLElement>('.wx-dot')!;
+    // 关闭按钮必须在面板内容建好之后再绑——之前它在空面板上绑，所以点了没用
+    panel.querySelector<HTMLElement>('.phone-x')!.addEventListener('click', () => ui.openPanel(null));
 
-    let page: PhonePage = 'chats';
-    /** 记住从哪个 tab 进来的，返回时回到那里（微信的行为） */
-    let lastTab: PhonePage = 'chats';
+    let page: PhonePage = 'home';
+    let wx: WxPage = 'chats';
+    /** 从哪个微信 tab 进来的，返回时回到那里 */
+    let lastWx: WxPage = 'chats';
     let chatId: string | null = null;
+    let remarkId: string | null = null;
     let unreadReal = 0;
     let lastSig = '';
 
-    /** 这台手机的通讯录 */
+    const WX_TABS: WxPage[] = ['chats', 'contacts', 'discover', 'me'];
+
+    // ── 联系人：你/她 + 在世界里认识的人 ──
     function contactsOf(save: SaveData): Contact[] {
-      if (owner === 'me') return myContacts(save.character.personality.name);
-      const p = PROFILES.find((x) => x.id === save.profileId) ?? PROFILES[0];
-      return herContacts(p.life, save.playerName);
+      // 开局的好友申请没通过之前，两边手机的通讯录都该是空的——
+      // 那时你还"不认识"她，她也还没把加上的人收进通讯录。
+      // 老存档没有 her-opening 这条（!op）时按已通过处理，不影响旧档。
+      const op = save.metPeople.find((p) => p.id === 'her-opening');
+      const openingAccepted = !op || op.added;
+      if (!openingAccepted) return [];
+
+      const base = owner === 'me' ? myContacts(save.character.personality.name) : herContacts(save.playerName);
+      const met = save.metPeople
+        // 'her-opening' 只是开局的"好友申请"道具，不是真联系人：
+        // 玩家这边她本来就是 'her'，她那边不该出现"她自己"，两边都要排掉。
+        .filter((p) => p.added && p.id !== 'her-opening')
+        .map((p): Contact => ({ id: p.id, name: p.remark || p.name, emoji: p.emoji, note: p.note }));
+      // 按 id 去重：女巫本来就在她的通讯录里（外婆的老朋友），
+      // 但她出门在工坊"再遇到"女巫时也会进 metPeople —— 不去重就会出现两个女巫。
+      const seen = new Set<string>();
+      return [...base, ...met].filter((c) => {
+        if (seen.has(c.id)) return false;
+        seen.add(c.id);
+        return true;
+      });
     }
 
-    const SUB_PAGES: PhonePage[] = ['chat', 'moments', 'album', 'diary', 'schedule'];
-    const TITLES: Partial<Record<PhonePage, string>> = {
-      chat: '聊天',
-      moments: '朋友圈',
-      album: '相册',
-      diary: owner === 'me' ? '我的日记' : '日记',
-      schedule: owner === 'me' ? '我的日程' : 'TA 的日程',
-    };
+    function contactOf(save: SaveData, id: string): Contact | null {
+      const direct = contactsOf(save).find((c) => c.id === id);
+      if (direct) return direct;
+      const met = save.metPeople.find((p) => p.id === id);
+      return met ? { id: met.id, name: met.name, emoji: met.emoji, note: met.note } : null;
+    }
 
-    /** 共享会话 vs 各自的 NPC 会话 */
+    function avatarOf(save: SaveData, id: string): string {
+      if (id === 'me') return save.myAvatar;
+      if (id === 'her') return save.herAvatar;
+      return contactOf(save, id)?.emoji ?? '👤';
+    }
+
+    function myStatusOf(save: SaveData): WxStatus | null {
+      return activeStatus(owner === 'me' ? save.myStatus : save.herStatus);
+    }
+
     function threadOf(save: SaveData, contactId: string): { msgs: ChatMsg[]; tOwner: 'her' | 'me' } {
       const shared = (owner === 'me' && contactId === 'her') || (owner === 'her' && contactId === 'me');
       if (shared) {
@@ -950,7 +1282,6 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     }
 
     function isMineMsg(msg: ChatMsg, tOwner: 'her' | 'me'): boolean {
-      // 同一台手机内：'owner' 是机主；跨手机镜像查看时，'her' 才是机主（她）
       return tOwner === owner ? msg.from === 'owner' : msg.from === 'her';
     }
 
@@ -959,36 +1290,107 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     }
 
     function unreadOf(save: SaveData, contactId: string): number {
-      if (canSendForRead(contactId)) return unreadReal;
-      const th = threadFor(save, owner, contactId);
-      return th?.unread ?? 0;
-    }
-    /** 只有"我 → 她"这段真实对话用 UI 侧未读 */
-    function canSendForRead(contactId: string | null): boolean {
-      return owner === 'me' && contactId === 'her';
-    }
-
-    function lastMsgOf(save: SaveData, contactId: string): ChatMsg | null {
-      const { msgs } = threadOf(save, contactId);
-      return msgs.length ? msgs[msgs.length - 1] : null;
+      if (owner === 'me' && contactId === 'her') return unreadReal;
+      return threadFor(save, owner, contactId)?.unread ?? 0;
     }
 
     function totalUnread(save: SaveData): number {
       return contactsOf(save).reduce((n, c) => n + unreadOf(save, c.id), 0);
     }
 
-    // ── 各页内容 ─────────────────────────
+    // ── 主屏 ──────────────────────────────
+    function homeBody(save: SaveData): string {
+      const her = owner === 'her';
+      const name = her ? save.character.personality.name : save.playerName;
+      const phase = save.story?.phase ?? 0;
+      // 我这边的主屏副标题跟着剧情阶段走，不再暗示"共处一室"：
+      // 起初只是隔屏联系，能看见她那边的世界之后，才是"在场"。
+      const sub = her
+        ? lastPresence?.away
+          ? `${lastPresence.emoji} 在${lastPresence.placeName}`
+          : '🏠 在家'
+        : save.story?.hasPhysical
+          ? `${tp(save)}来到你身边了`
+          : phase >= 1
+            ? '你能看见那边的世界了'
+            : '隔着两个世界';
+
+      // 我手机：阶段 0 只有微信/日记/日程，天气删除；她那边的手机保留天气。
+      // 相机在世界解锁后（我这边能看见）才出现；她手机一直可用。
+      const apps: { id: string; ico: string; label: string; locked?: boolean }[] = [
+        { id: 'wechat', ico: '💬', label: '微信' },
+        ...(owner === 'her' || phase >= 1 ? [{ id: 'camera', ico: '📷', label: '相机' }] : []),
+        { id: 'diary', ico: '📖', label: '日记' },
+        { id: 'schedule', ico: '🗓️', label: '日程' },
+        ...(owner === 'her' ? [{ id: 'weather', ico: '🌤️', label: '天气' }] : []),
+        { id: 'shop', ico: '🛒', label: '商店' },
+      ];
+      return `<div class="ph-wall">
+          <div class="ph-wall-row"><b>${formatClock(save.clock)}</b><span>${WEEKDAY_CN[new Date().getDay()]} · 第 ${Math.floor(save.clock / 24) + 1} 天</span></div>
+          <div class="ph-me">
+            <span class="ph-ava">${her ? save.herAvatar : save.myAvatar}</span>
+            <div class="ph-me-txt"><b>${escapeHtml(name)}</b><span>${escapeHtml(sub)}</span></div>
+          </div>
+        </div>
+        <div class="ph-apps">
+          ${apps
+            .map(
+              (a) =>
+                `<button class="ph-app${a.locked ? ' locked' : ''}" data-app="${a.id}"><span class="ph-ico">${a.ico}</span><em>${escapeHtml(a.label)}</em></button>`,
+            )
+            .join('')}
+        </div>`;
+    }
+
+    function cameraBody(): string {
+      const place = lastPresence?.placeId ?? 'home';
+      const p = getPlace(place);
+      const img = ALBUM_IMG[place];
+      const art = img
+        ? `<img class="wx-shot" src="${img}" alt="" />`
+        : `<div class="wx-shot" style="background:linear-gradient(160deg,${PLACE_ART[place]?.[0] ?? '#333'},${PLACE_ART[place]?.[1] ?? '#222'})"><span>${PLACE_ART[place]?.[2] ?? '📷'}</span></div>`;
+      return `<p class="ph-note">对准的是${escapeHtml(p.name)}。</p>
+        <div class="wx-cam">${art}</div>
+        <div class="wx-cam-foot"><button class="wx-shoot">拍一张</button></div>`;
+    }
+
+    function weatherBody(save: SaveData): string {
+      const hour = save.clock % 24;
+      const phase = hour < 5 ? '深夜' : hour < 11 ? '早上' : hour < 13 ? '中午' : hour < 18 ? '下午' : hour < 23 ? '晚上' : '深夜';
+      return `<div class="wx-weather">
+          <div class="wx-w-big">${WEATHER_LABEL[save.room.weather] ?? save.room.weather}</div>
+          <div class="wx-w-sub">${phase} · ${formatClock(save.clock)}</div>
+          <div class="wx-w-rows">
+            <div class="row"><span>位置</span><b>${escapeHtml(lastPresence?.placeName ?? '小屋')}</b></div>
+            <div class="row"><span>台灯</span><b>${save.room.lampOn ? '开着' : '关着'}</b></div>
+            <div class="row"><span>窗帘</span><b>${save.room.curtainOpen ? '拉开' : '拉上'}</b></div>
+            <div class="row"><span>整洁度</span><b>${Math.round(save.room.tidiness)}/100</b></div>
+          </div>
+        </div>`;
+    }
+
+    // ── 微信各页 ───────────────────────────
     function chatsBody(save: SaveData): string {
       const cs = contactsOf(save);
+      // 阶段 0 + 还没通过好友申请 → 引导去通讯录
+      const openingPending = save.metPeople.find((p) => p.id === 'her-opening' && !p.added);
+      if (openingPending && cs.length === 0) {
+        return `<div class="wx-empty-guide">
+          <div class="wx-empty-ico">📨</div>
+          <h4>还没有聊天对象</h4>
+          <p>先到「通讯录」看一眼新的朋友，<br/>通过好友申请之后就可以聊天了。</p>
+        </div>`;
+      }
       return `<div class="wx-list">${cs
         .map((c) => {
-          const m = lastMsgOf(save, c.id);
+          const m = threadOf(save, c.id).msgs.slice(-1)[0] ?? null;
           const un = unreadOf(save, c.id);
           const preview = m ? escapeHtml(m.text) : '<span class="wx-mute">还没有聊天记录</span>';
+          const st = c.id === (owner === 'me' ? 'her' : 'me') ? myStatusOf(save) : null;
           return `<button class="wx-chat" data-chat="${c.id}">
-            <span class="wx-ava">${c.emoji}</span>
+            <span class="wx-ava">${avatarOf(save, c.id)}</span>
             <span class="wx-cbody">
-              <span class="wx-cname">${escapeHtml(c.name)}</span>
+              <span class="wx-cname">${escapeHtml(c.name)}${st ? `<i class="wx-st">${st.emoji}${escapeHtml(st.word)}</i>` : ''}</span>
               <span class="wx-prev">${preview}</span>
             </span>
             <span class="wx-cmeta">
@@ -1001,91 +1403,223 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     }
 
     function contactsBody(save: SaveData): string {
-      const cs = contactsOf(save);
+      const added = contactsOf(save);
+      const pending = save.metPeople.filter((p) => !p.added && p.id !== 'her-opening');
+      const st = myStatusOf(save);
       return `<div class="wx-list">
-        <div class="wx-idx">联系人</div>
-        ${cs
-          .map(
-            (c) => `<button class="wx-contact" data-chat="${c.id}">
-              <span class="wx-ava">${c.emoji}</span>
-              <span class="wx-cbody"><span class="wx-cname">${escapeHtml(c.name)}</span><span class="wx-prev">${escapeHtml(c.note)}</span></span>
-            </button>`,
-          )
-          .join('')}
-      </div>`;
+          <button class="wx-row" data-go="newfriends">
+            <span class="wx-row-i">👤</span><span class="wx-row-t">新的朋友</span>
+            ${pending.length ? `<i class="wx-badge inline">${pending.length}</i>` : ''}<i class="wx-arrow">›</i>
+          </button>
+          <button class="wx-row" data-go="onlychat">
+            <span class="wx-row-i">💬</span><span class="wx-row-t">仅聊天的朋友</span><i class="wx-arrow">›</i>
+          </button>
+          <div class="wx-idx">通讯录联系人</div>
+          ${
+            added.length
+              ? added
+                  .map(
+                    (c) => `<button class="wx-contact" data-chat="${c.id}">
+                      <span class="wx-ava">${avatarOf(save, c.id)}</span>
+                      <span class="wx-cbody">
+                        <span class="wx-cname">${escapeHtml(c.name)}${c.id === (owner === 'me' ? 'her' : 'me') && st ? `<i class="wx-st">${st.emoji}${escapeHtml(st.word)}</i>` : ''}</span>
+                        <span class="wx-prev">${escapeHtml(c.note)}</span>
+                      </span>
+                    </button>`,
+                  )
+                  .join('')
+              : '<p class="ph-empty">还没有联系人。</p>'
+          }
+        </div>`;
+    }
+
+    function newfriendsBody(save: SaveData): string {
+      const pending = save.metPeople.filter((p) => !p.added);
+      const opening = pending.find((p) => p.id === 'her-opening');
+      const others = pending.filter((p) => p.id !== 'her-opening');
+      const items = opening ? [opening, ...others] : others;
+      if (!items.length) {
+        return '<div class="wx-list"><p class="ph-empty">暂时没有新的朋友申请。</p></div>';
+      }
+      return `<div class="wx-list">
+          <div class="wx-idx">好友申请</div>
+          ${items
+            .map(
+              (p) => {
+                const isOpening = p.id === 'her-opening';
+                return `<div class="wx-pending ${isOpening ? 'opening' : ''}">
+                  <span class="wx-ava">${p.emoji}</span>
+                  <span class="wx-cbody">
+                    <span class="wx-cname">${escapeHtml(p.name)}</span>
+                    <span class="wx-prev">${escapeHtml(p.note)}</span>
+                  </span>
+                  <button class="wx-accept" data-accept="${p.id}">${isOpening ? '接受' : '添加'}</button>
+                </div>`;
+              },
+            )
+            .join('')}
+        </div>`;
+    }
+
+    function onlychatBody(save: SaveData): string {
+      const pending = save.metPeople.filter((p) => !p.added);
+      return `<div class="wx-list">
+          <div class="wx-idx">仅聊天的朋友</div>
+          ${
+            pending.length
+              ? pending
+                  .map(
+                    (p) => `<div class="wx-contact static">
+                      <span class="wx-ava">${p.emoji}</span>
+                      <span class="wx-cbody"><span class="wx-cname">${escapeHtml(p.name)}</span><span class="wx-prev">聊过，还没加好友</span></span>
+                    </div>`,
+                  )
+                  .join('')
+              : '<p class="ph-empty">没有"只聊天、不加好友"的人。</p>'
+          }
+        </div>`;
+    }
+
+    function remarkBody(save: SaveData, id: string): string {
+      const p = save.metPeople.find((x) => x.id === id);
+      const name = p?.name ?? '';
+      const isOpening = id === 'her-opening';
+      return `<div class="wx-remark">
+          <div class="wx-remark-head">
+            <span class="wx-ava big">${p?.emoji ?? '👤'}</span>
+            <div class="wx-cbody">
+              <span class="wx-cname">${escapeHtml(name)}</span>
+              <span class="wx-prev">${isOpening ? '新的朋友' : '新认识的人'}</span>
+            </div>
+          </div>
+          <div class="wx-remark-row">
+            <label>备注名</label>
+            <input class="wx-remark-in" type="text" value="${escapeHtml(name)}" maxlength="12" placeholder="给TA一个备注" />
+          </div>
+          <div class="wx-remark-row">
+            <label>分组</label>
+            <div class="wx-remark-tags">
+              ${['朋友', '家人', '同学', '同事']
+                .map((g) => `<button class="wx-remark-tag ${g === '朋友' ? 'on' : ''}" data-group="${g}">${g}</button>`)
+                .join('')}
+            </div>
+          </div>
+          <button class="wx-remark-done" data-remark-done="${id}">完成</button>
+        </div>`;
     }
 
     function discoverBody(): string {
       return `<div class="wx-list">
-        <div class="wx-row" data-go="moments"><span class="wx-row-i">🌈</span><span class="wx-row-t">朋友圈</span><i class="wx-arrow">›</i></div>
-        <div class="wx-row ghost"><span class="wx-row-i">📷</span><span class="wx-row-t">扫一扫</span><i class="wx-arrow">›</i></div>
-        <div class="wx-row ghost"><span class="wx-row-i">🎵</span><span class="wx-row-t">听一听</span><i class="wx-arrow">›</i></div>
-      </div>`;
+          <button class="wx-row" data-go="moments"><span class="wx-row-i">🌈</span><span class="wx-row-t">朋友圈</span><i class="wx-arrow">›</i></button>
+          <button class="wx-row ghost"><span class="wx-row-i">📷</span><span class="wx-row-t">扫一扫</span><i class="wx-arrow">›</i></button>
+          <button class="wx-row ghost"><span class="wx-row-i">🎵</span><span class="wx-row-t">听一听</span><i class="wx-arrow">›</i></button>
+        </div>`;
     }
 
     function meBody(save: SaveData): string {
       const her = owner === 'her';
       const name = her ? save.character.personality.name : save.playerName;
-      const sub = her
-        ? lastPresence?.away
-          ? `${lastPresence.emoji} 在${lastPresence.placeName}`
-          : '🏠 在家'
-        : '住在小屋';
+      const wxid = her ? 'she_hearth' : 'me_hearth';
+      const st = myStatusOf(save);
+      const stHtml = st
+        ? `<div class="wx-status on"><span class="wx-st-emoji">${st.emoji}</span><span class="wx-st-txt"><b>${escapeHtml(st.word)}</b><i>${escapeHtml(st.text)}</i></span></div>`
+        : `<div class="wx-status"><span class="wx-st-emoji">＋</span><span class="wx-st-txt"><b>${her ? 'TA 还没发状态' : '发个状态'}</b>${her ? '<i>想法来了才会发</i>' : '<i>点一下写一句</i>'}</span></div>`;
+      // 我手机去掉相册入口；她的手机保留相册。
+      const albumRow = her
+        ? `<button class="wx-row" data-go="album"><span class="wx-row-i">🖼️</span><span class="wx-row-t">相册</span><i class="wx-arrow">›</i></button>`
+        : '';
       return `<div class="wx-list">
-        <div class="wx-me">
-          <span class="wx-ava big">${her ? presenceEmoji() : '🧑'}</span>
-          <span class="wx-cbody"><span class="wx-cname">${escapeHtml(name)}</span><span class="wx-prev">${escapeHtml(sub)}</span></span>
-        </div>
-        <div class="wx-row" data-go="album"><span class="wx-row-i">🖼️</span><span class="wx-row-t">相册</span><i class="wx-arrow">›</i></div>
-        <div class="wx-row" data-go="diary"><span class="wx-row-i">📖</span><span class="wx-row-t">${her ? '日记' : '写日记'}</span><i class="wx-arrow">›</i></div>
-        <div class="wx-row" data-go="schedule"><span class="wx-row-i">🗓️</span><span class="wx-row-t">${her ? '日程' : '排日程'}</span><i class="wx-arrow">›</i></div>
-      </div>`;
+          <div class="wx-me">
+            <button class="wx-ava big" data-avatar aria-label="换头像">${her ? save.herAvatar : save.myAvatar}</button>
+            <span class="wx-cbody">
+              <span class="wx-cname">${escapeHtml(name)}</span>
+              <span class="wx-prev">微信号：${wxid}</span>
+            </span>
+          </div>
+          ${her ? stHtml : `<button class="wx-status-btn" data-status>${stHtml}</button>`}
+          <button class="wx-row" data-go="moments"><span class="wx-row-i">🌈</span><span class="wx-row-t">朋友圈</span><i class="wx-arrow">›</i></button>
+          ${albumRow}
+          <button class="wx-row ghost"><span class="wx-row-i">❤️</span><span class="wx-row-t">收藏</span><i class="wx-arrow">›</i></button>
+          <button class="wx-row ghost"><span class="wx-row-i">⚙️</span><span class="wx-row-t">设置</span><i class="wx-arrow">›</i></button>
+        </div>`;
     }
 
     function chatBody(save: SaveData, contactId: string): string {
       const { msgs, tOwner } = threadOf(save, contactId);
-      const cs = contactsOf(save);
-      const c = cs.find((x) => x.id === contactId);
+      const c = contactOf(save, contactId);
+      const st = contactId === (owner === 'me' ? 'her' : 'me') ? myStatusOf(save) : null;
       const head = `<div class="wx-chat-note">${escapeHtml(c?.note ?? '')}</div>`;
+      const stLine = st ? `<div class="wx-chat-status">${st.emoji} ${escapeHtml(st.word)} · ${escapeHtml(st.text)}</div>` : '';
+      // 她还有话没"打完"（排期队列里还有她的消息）→ 显示"正在输入…"
+      const herPending = (save.pendingMsgs ?? []).some((m) => m.owner === 'me' && m.from === 'her');
+      const typing =
+        owner === 'me' && contactId === 'her' && herPending
+          ? `<div class="wx-line"><span class="wx-mini">${save.herAvatar}</span><span class="wx-bub wx-typing"><i></i><i></i><i></i></span></div>`
+          : '';
       if (!msgs.length) {
-        return head + `<p class="ph-empty">${owner === 'me' ? '还没有聊过，说点什么吧。' : '还没有聊天记录。'}</p>`;
+        return (
+          head +
+          stLine +
+          typing +
+          (herPending ? '' : `<p class="ph-empty">${owner === 'me' ? '还没有聊过，说点什么吧。' : '还没有聊天记录。'}</p>`)
+        );
       }
       return (
         head +
+        stLine +
         msgs
-          .map(
-            (m) =>
-              `<div class="wx-line ${isMineMsg(m, tOwner) ? 'mine' : ''}">
-                ${isMineMsg(m, tOwner) ? '' : `<span class="wx-mini">${owner === 'her' && c && m.from === 'me' ? '🧑' : c?.emoji ?? ''}</span>`}
-                <span class="wx-bub">${escapeHtml(m.text)}</span>
-              </div>`,
-          )
-          .join('')
+          .map((m) => {
+            const mine = isMineMsg(m, tOwner);
+            const ava = mine
+              ? ''
+              : `<span class="wx-mini">${avatarOf(save, m.from === 'owner' ? (owner === 'me' ? 'me' : 'her') : m.from)}</span>`;
+            // 图片消息：跟真人微信一样是一张缩略图，点开可放大；它不是气泡文字
+            const body = m.image
+              ? `<span class="wx-bub wx-bub-img">
+                  <img class="wx-img" src="${escapeHtml(m.image)}" alt="图片" data-zoom="${escapeHtml(m.image)}" />
+                  ${m.text ? `<em class="wx-img-cap">${escapeHtml(m.text)}</em>` : ''}
+                </span>`
+              : `<span class="wx-bub">${escapeHtml(m.text)}</span>`;
+            return `<div class="wx-line ${mine ? 'mine' : ''}">${ava}${body}</div>`;
+          })
+          .join('') +
+        typing
       );
     }
 
     function momentsBody(save: SaveData): string {
       const list = [...momentsFor(save)].reverse().slice(0, 30);
-      const post = owner === 'me'
-        ? `<div class="wx-post">
-             <textarea class="wx-post-in" rows="2" placeholder="这一刻的想法…"></textarea>
-             <button class="wx-post-btn">发表</button>
-           </div>`
-        : '';
+      const post =
+        owner === 'me'
+          ? `<div class="wx-post">
+               <textarea class="wx-post-in" rows="2" placeholder="这一刻的想法…"></textarea>
+               <button class="wx-post-btn">发表</button>
+             </div>`
+          : '';
       const feed = list
         .map((m) => {
-          const author = m.author === 'me' ? save.playerName : save.character.personality.name;
-          const avatar = m.author === 'me' ? '🧑' : m.placeId ? getPlace(m.placeId).emoji : '🌙';
+          const mine = m.author === 'me';
+          const author = mine ? save.playerName : save.character.personality.name;
+          const avatar = mine ? save.myAvatar : m.placeId ? getPlace(m.placeId).emoji : save.herAvatar;
           const where = m.placeId ? getPlace(m.placeId).name : '';
-          const comments = m.comments
+          // 共同好友评论可见：我的评论她能看见，她的评论我能看见；NPC 评论只有共同好友时双方都可见
+          const visibleCmts = m.comments.filter((cm) => {
+            if (cm.by === 'me' || cm.by === 'her') return true;
+            // NPC：评论者与发朋友圈的人是否共同好友
+            return !!cm.isMutual;
+          });
+          const comments = visibleCmts
             .map((cm) => `<div class="mo-cmt"><b>${escapeHtml(cm.name)}</b>${escapeHtml(cm.text)}</div>`)
             .join('');
+          const img = m.placeId ? ALBUM_IMG[m.placeId] : '';
+          const photo = img ? `<img class="mo-img" src="${img}" alt="" />` : '';
           return `<article class="mo">
             <div class="mo-head">
               <span class="mo-ava">${avatar}</span>
               <div class="mo-who"><b>${escapeHtml(author)}</b><span>${hm(m.at)}${where ? ` · ${where}` : ''}</span></div>
             </div>
             <p class="mo-text">${escapeHtml(m.text)}</p>
+            ${photo}
             <div class="mo-foot">
               <button class="mo-like ${m.likedByMe ? 'on' : ''}" data-like="${m.id}">♥ ${m.likes}</button>
               <span class="mo-kind">${MOMENT_KIND[m.kind] ?? ''}</span>
@@ -1099,13 +1633,16 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
 
     function albumBody(save: SaveData): string {
       const list = [...photosFor(save)].reverse().slice(0, 40);
-      if (!list.length) return '<p class="ph-empty">相册还是空的。</p>';
+      if (!list.length) return '<p class="ph-empty">相册还是空的。TA 出门时会拍几张。</p>';
       return `<div class="ph-album">${list
         .map((p) => {
           const pl = getPlace(p.placeId);
           const [a, b, icon] = PLACE_ART[p.placeId] ?? PLACE_ART.walk;
+          const art = p.img
+            ? `<img class="pp-img" src="${p.img}" alt="${escapeHtml(p.caption)}" />`
+            : `<div class="pp-art" style="background:linear-gradient(160deg,${a},${b})"><span>${icon}</span></div>`;
           return `<figure class="ph-photo">
-            <div class="pp-art" style="background:linear-gradient(160deg,${a},${b})"><span>${icon}</span></div>
+            ${art}
             <figcaption><b>${escapeHtml(p.caption)}</b><span>${hm(p.at)} · ${pl.name}</span></figcaption>
           </figure>`;
         })
@@ -1122,34 +1659,32 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           ${
             mine.length
               ? mine
-                  .map(
-                    (d) =>
-                      `<div class="wx-diary-item"><span class="d-day">第 ${d.day + 1} 天</span>${escapeHtml(d.text)}</div>`,
-                  )
+                  .map((d) => `<div class="wx-diary-item"><span class="d-day">第 ${d.day + 1} 天</span>${escapeHtml(d.text)}</div>`)
                   .join('')
-              : '<p class="ph-empty">还没写过。写下来，她会看见。</p>'
+              : `<p class="ph-empty">还没写过。写下来，${tp(save)}会看见。</p>`
           }`;
       }
       const list = [...diaryFor(save)].reverse().slice(0, 20);
-      return list
-        .map(
-          (d) => `<div class="wx-diary-item"><span class="d-day">第 ${d.day + 1} 天</span>${escapeHtml(d.text)}</div>`,
-        )
-        .join('') || '<p class="ph-empty">TA 还没写过日记。有值得记的事、或心情有波动时，才会写一笔。</p>';
+      return (
+        list
+          .map((d) => `<div class="wx-diary-item"><span class="d-day">第 ${d.day + 1} 天</span>${escapeHtml(d.text)}</div>`)
+          .join('') || '<p class="ph-empty">TA 还没写过日记。有值得记的事、或心情有波动时，才会写一笔。</p>'
+      );
     }
 
-    function planRows(blocks: PlanBlock[], editable: boolean): string {
+    function planRows(blocks: PlanBlock[], editable: boolean, save: SaveData): string {
+      const hour = save.clock % 24;
       return blocks
         .map((b, i) => {
           const pl = getPlace(b.placeId);
           if (!editable) {
-            const nowOn = (lastSave?.clock ?? 0) % 24 >= b.start && (lastSave?.clock ?? 0) % 24 < b.end;
+            const on = hour >= b.start && hour < b.end;
             const kindText = b.kind === 'commit' ? '必须去' : b.kind === 'want' ? 'TA 想去' : '';
-            return `<li class="${nowOn ? 'on' : ''} ${b.kind}">
+            return `<li class="${on ? 'on' : ''} ${b.kind}">
               <span class="sc-time">${hm(b.start)}</span>
               <span class="sc-e">${b.placeId === 'home' ? '🏠' : pl.emoji}</span>
               <span class="sc-b"><b>${escapeHtml(b.label)}</b>${kindText ? `<i>${kindText}</i>` : ''}</span>
-              ${nowOn ? '<span class="sc-now">现在</span>' : ''}
+              ${on ? '<span class="sc-now">现在</span>' : ''}
             </li>`;
           }
           return `<li class="sc-edit" data-row="${i}">
@@ -1165,8 +1700,8 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     function scheduleBody(save: SaveData): string {
       if (owner === 'me') {
         const blocks = save.myPlan?.blocks ?? [];
-        return `<p class="ph-note">排一下自己今天要做什么。她会看到你的日程，也可能拿来调侃你。</p>
-          <ul class="ph-sched">${planRows(blocks, true)}</ul>
+        return `<p class="ph-note">排一下自己今天要做什么。TA 会看到你的日程。</p>
+          <ul class="ph-sched">${planRows(blocks, true, save)}</ul>
           <div class="wx-plan-actions">
             <button class="wx-add">加一条</button>
             <button class="wx-save-plan">保存</button>
@@ -1176,11 +1711,66 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       const t = pronoun(save.character.personality.gender);
       if (!plan || !plan.blocks.length) return `<p class="ph-empty">${t}还没定今天要做什么。</p>`;
       return `<p class="ph-note">${escapeHtml(`${t}今天：${describePlan(plan.blocks)}`)}</p>
-        <ul class="ph-sched">${planRows(plan.blocks, false)}</ul>`;
+        <ul class="ph-sched">${planRows(plan.blocks, false, save)}</ul>`;
     }
 
+    // ── 换头像 / 发状态 ────────────────────
+    function avatarPickerBody(save: SaveData): string {
+      const cur = owner === 'me' ? save.myAvatar : save.herAvatar;
+      return `<p class="ph-note">选一个头像。两部手机会同时换。</p>
+        <div class="wx-avatars">${AVATARS.map(
+          (a) => `<button class="wx-av ${a === cur ? 'on' : ''}" data-av="${a}">${a}</button>`,
+        ).join('')}</div>`;
+    }
+
+    function statusPickerBody(): string {
+      const words = STATUS_WORDS.map(
+        (w) => `<button class="wx-word" data-word="${w.emoji}|${w.word}"><span>${w.emoji}</span><em>${w.word}</em></button>`,
+      ).join('');
+      return `<p class="ph-note">选个状态，再写一句。24 小时后自动结束。</p>
+        <div class="wx-words">${words}</div>
+        <div class="wx-status-write">
+          <input class="wx-status-in" type="text" maxlength="24" placeholder="写一句感受…" />
+          <button class="wx-status-ok">就这样</button>
+        </div>
+        <div class="wx-status-end"><button class="wx-status-clear">结束状态</button></div>`;
+    }
+
+    let pickedWord: { emoji: string; word: string } | null = null;
+
+    // ── 渲染 ──────────────────────────────
+    const TITLES: Partial<Record<PhonePage | WxPage, string>> = {
+      home: owner === 'her' ? `${tp()}的手机` : '我的手机',
+      wechat: '微信',
+      album: '相册',
+      diary: owner === 'me' ? '我的日记' : '日记',
+      schedule: owner === 'me' ? '我的日程' : 'TA 的日程',
+      camera: '相机',
+      weather: '天气',
+      chats: '微信',
+      contacts: '通讯录',
+      discover: '发现',
+      me: '我',
+      chat: '聊天',
+      moments: '朋友圈',
+      newfriends: '新的朋友',
+      onlychat: '仅聊天的朋友',
+      avatar: '换头像',
+      status: '发个状态',
+      remark: '设置备注和标签',
+    };
+
     function bodyFor(save: SaveData): string {
-      switch (page) {
+      if (page === 'home') return homeBody(save);
+      if (page !== 'wechat') {
+        if (page === 'album') return albumBody(save);
+        if (page === 'diary') return diaryBody(save);
+        if (page === 'schedule') return scheduleBody(save);
+        if (page === 'camera') return cameraBody();
+        if (page === 'weather') return weatherBody(save);
+        return '';
+      }
+      switch (wx) {
         case 'chats':
           return chatsBody(save);
         case 'contacts':
@@ -1193,28 +1783,64 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           return chatId ? chatBody(save, chatId) : '';
         case 'moments':
           return momentsBody(save);
-        case 'album':
-          return albumBody(save);
-        case 'diary':
-          return diaryBody(save);
-        case 'schedule':
-          return scheduleBody(save);
+        case 'newfriends':
+          return newfriendsBody(save);
+        case 'onlychat':
+          return onlychatBody(save);
+        case 'avatar':
+          return avatarPickerBody(save);
+        case 'status':
+          return statusPickerBody();
+        case 'remark':
+          return remarkId ? remarkBody(save, remarkId) : '';
         default:
           return '';
       }
     }
 
-    /** 便宜的变化指纹：变了才重绘，避免每帧重建 DOM */
     function sigFor(save: SaveData): string {
-      const base = `${page}|${chatId ?? ''}|${save.profileId}|`;
-      const cs = contactsOf(save);
+      const base = `${page}|${wx}|${chatId ?? ''}|${save.profileId}|${save.myAvatar}|${save.herAvatar}|`;
+      const st = myStatusOf(save);
       switch (page) {
-        case 'chats':
-          return base + cs.map((c) => `${c.id}:${unreadOf(save, c.id)}:${lastMsgOf(save, c.id)?.id ?? ''}`).join(',');
-        case 'chat':
-          return base + threadOf(save, chatId!).msgs.map((m) => m.id).join(',');
-        case 'moments':
-          return base + momentsFor(save).map((m) => `${m.id}:${m.likes}:${m.likedByMe ? 1 : 0}:${m.comments.length}`).join(',');
+        case 'home':
+          return base + `${save.playerName}|${save.character.personality.name}|${st?.word ?? ''}`;
+        case 'wechat':
+          switch (wx) {
+            case 'chats':
+              return (
+                base +
+                contactsOf(save)
+                  .map((c) => `${c.id}:${unreadOf(save, c.id)}:${threadOf(save, c.id).msgs.slice(-1)[0]?.id ?? ''}`)
+                  .join(',') +
+                `|${st?.word ?? ''}`
+              );
+            case 'chat':
+              return (
+                base +
+                threadOf(save, chatId!).msgs.map((m) => m.id).join(',') +
+                `|p${(save.pendingMsgs ?? []).filter((m) => m.owner === 'me' && m.from === 'her').length}`
+              );
+            case 'moments':
+              return (
+                base +
+                momentsFor(save)
+                  .map((m) => `${m.id}:${m.likes}:${m.likedByMe ? 1 : 0}:${m.comments.length}`)
+                  .join(',')
+              );
+            case 'contacts':
+              return (
+                base +
+                save.metPeople.map((p) => `${p.id}:${p.added ? 1 : 0}:${p.remark ?? ''}`).join(',') +
+                `|${st?.word ?? ''}`
+              );
+            case 'newfriends':
+            case 'onlychat':
+              return base + save.metPeople.filter((p) => !p.added).map((p) => `${p.id}:${p.note}`).join(',') + `|${st?.word ?? ''}`;
+            case 'remark':
+              return base + `${remarkId ?? ''}|${save.metPeople.find((p) => p.id === remarkId)?.added ? 1 : 0}`;
+            default:
+              return base + `${save.playerName}|${save.character.personality.name}|${st?.word ?? ''}`;
+          }
         case 'album':
           return base + photosFor(save).map((p) => p.id).join(',');
         case 'diary':
@@ -1227,48 +1853,172 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
               : `${JSON.stringify(save.herPlan?.blocks ?? [])}#${Math.floor(save.clock % 24)}`)
           );
         default:
-          return base + `${save.playerName}|${save.character.personality.name}`;
+          return base + formatClock(save.clock);
       }
     }
 
+    function toHours(v: string): number {
+      const m = /^(\d{1,2}):(\d{2})$/.exec(v.trim());
+      if (!m) return 9;
+      return (Number(m[1]) % 24) + Number(m[2]) / 60;
+    }
+
     function bindBody(save: SaveData): void {
+      // 主屏 APP
+      scroll.querySelectorAll<HTMLElement>('[data-app]').forEach((b) =>
+        b.addEventListener('click', () => {
+          const app = b.dataset.app as PhonePage;
+          if (app === 'wechat') {
+            page = 'wechat';
+            wx = 'chats';
+            lastWx = 'chats';
+          } else {
+            page = app;
+          }
+          lastSig = '';
+          paint(save);
+        }),
+      );
+      // 微信 tab
+      tabs.querySelectorAll<HTMLElement>('[data-tab]').forEach((b) =>
+        b.addEventListener('click', () => {
+          wx = b.dataset.tab as WxPage;
+          lastWx = wx;
+          pickedWord = null;
+          lastSig = '';
+          paint(save);
+        }),
+      );
+      // 进入会话 / 子页
       scroll.querySelectorAll<HTMLElement>('[data-chat]').forEach((b) =>
         b.addEventListener('click', () => openChat(b.dataset.chat as string)),
       );
+      // 点聊天里的图片 → 放大看（记录本身不动，翻回去还在）
+      scroll.querySelectorAll<HTMLElement>('[data-zoom]').forEach((img) =>
+        img.addEventListener('click', () => openImageViewer(img.dataset.zoom as string)),
+      );
       scroll.querySelectorAll<HTMLElement>('[data-go]').forEach((b) =>
-        b.addEventListener('click', () => go(b.dataset.go as PhonePage)),
+        b.addEventListener('click', () => {
+          const go = b.dataset.go as WxPage;
+          if (WX_TABS.includes(wx)) lastWx = wx;
+          wx = go;
+          lastSig = '';
+          paint(save);
+        }),
+      );
+      // 接受好友申请 → 进入备注/分组页面
+      scroll.querySelectorAll<HTMLElement>('[data-accept]').forEach((b) =>
+        b.addEventListener('click', () => {
+          remarkId = b.dataset.accept as string;
+          wx = 'remark';
+          lastWx = 'newfriends';
+          lastSig = '';
+          if (lastSave) paint(lastSave);
+        }),
+      );
+      // 分组选择（仅 UI 反馈）
+      scroll.querySelectorAll<HTMLElement>('[data-group]').forEach((b) =>
+        b.addEventListener('click', () => {
+          scroll.querySelectorAll<HTMLElement>('[data-group]').forEach((x) => x.classList.toggle('on', x === b));
+        }),
+      );
+      // 完成备注 → 真正加好友
+      scroll.querySelectorAll<HTMLElement>('[data-remark-done]').forEach((b) =>
+        b.addEventListener('click', () => {
+          const id = b.dataset.remarkDone as string;
+          const remark = scroll.querySelector<HTMLInputElement>('.wx-remark-in')?.value.trim();
+          cb.onAddContact(id, remark);
+          remarkId = null;
+          wx = 'contacts';
+          lastSig = '';
+          if (lastSave) paint(lastSave);
+        }),
       );
       scroll.querySelectorAll<HTMLElement>('[data-like]').forEach((b) =>
         b.addEventListener('click', () => cb.onLikeMoment(b.dataset.like as string)),
       );
-      const post = scroll.querySelector<HTMLButtonElement>('.wx-post-btn');
-      const postIn = scroll.querySelector<HTMLTextAreaElement>('.wx-post-in');
-      post?.addEventListener('click', () => {
-        const v = postIn?.value.trim() ?? '';
+      // 换头像
+      scroll.querySelectorAll<HTMLElement>('[data-avatar]').forEach((b) =>
+        b.addEventListener('click', () => {
+          page = 'wechat';
+          wx = 'avatar';
+          lastSig = '';
+          paint(save);
+        }),
+      );
+      scroll.querySelectorAll<HTMLElement>('[data-av]').forEach((b) =>
+        b.addEventListener('click', () => {
+          cb.onSetAvatar(owner, b.dataset.av as string);
+          wx = 'me';
+          lastSig = '';
+          if (lastSave) paint(lastSave);
+        }),
+      );
+      // 发状态
+      scroll.querySelectorAll<HTMLElement>('[data-status]').forEach((b) =>
+        b.addEventListener('click', () => {
+          page = 'wechat';
+          wx = 'status';
+          pickedWord = null;
+          lastSig = '';
+          paint(save);
+        }),
+      );
+      scroll.querySelectorAll<HTMLElement>('[data-word]').forEach((b) => {
+        b.addEventListener('click', () => {
+          const [emoji, word] = (b.dataset.word as string).split('|');
+          pickedWord = { emoji, word };
+          scroll.querySelectorAll<HTMLElement>('[data-word]').forEach((x) => x.classList.toggle('on', x === b));
+        });
+      });
+      scroll.querySelector<HTMLElement>('.wx-status-ok')?.addEventListener('click', () => {
+        const txt = scroll.querySelector<HTMLInputElement>('.wx-status-in')?.value.trim() ?? '';
+        if (!pickedWord) return;
+        cb.onSetStatus(owner, { emoji: pickedWord.emoji, word: pickedWord.word, text: txt || '……', at: save.clock });
+        wx = 'me';
+        lastSig = '';
+        if (lastSave) paint(lastSave);
+      });
+      scroll.querySelector<HTMLElement>('.wx-status-clear')?.addEventListener('click', () => {
+        cb.onSetStatus(owner, null);
+        wx = 'me';
+        lastSig = '';
+        if (lastSave) paint(lastSave);
+      });
+      // 相机
+      scroll.querySelector<HTMLElement>('.wx-shoot')?.addEventListener('click', () => {
+        cb.onShoot(lastPresence?.placeId ?? 'home');
+        page = 'album';
+        lastSig = '';
+        if (lastSave) paint(lastSave);
+      });
+      // 朋友圈发布
+      scroll.querySelector<HTMLElement>('.wx-post-btn')?.addEventListener('click', () => {
+        const v = scroll.querySelector<HTMLTextAreaElement>('.wx-post-in')?.value.trim() ?? '';
         if (!v) return;
         cb.onPostMoment(v);
-        if (postIn) postIn.value = '';
       });
-      const dIn = scroll.querySelector<HTMLTextAreaElement>('.wx-diary-in');
-      scroll.querySelector<HTMLButtonElement>('.wx-diary-btn')?.addEventListener('click', () => {
-        const v = dIn?.value.trim() ?? '';
+      // 我的日记
+      scroll.querySelector<HTMLElement>('.wx-diary-btn')?.addEventListener('click', () => {
+        const v = scroll.querySelector<HTMLTextAreaElement>('.wx-diary-in')?.value.trim() ?? '';
         if (!v) return;
         cb.onWriteMyDiary(v);
-        if (dIn) dIn.value = '';
       });
-      scroll.querySelector<HTMLButtonElement>('.wx-add')?.addEventListener('click', () => {
+      // 我的日程
+      scroll.querySelector<HTMLElement>('.wx-add')?.addEventListener('click', () => {
         const blocks = [...(save.myPlan?.blocks ?? [])];
         const last = blocks[blocks.length - 1];
         const start = last ? Math.min(23, Math.round(last.end)) : 9;
         blocks.push({ start, end: Math.min(24, start + 2), placeId: 'walk', kind: 'want', label: '做点什么' });
         cb.onSaveMyPlan(blocks);
       });
-      scroll.querySelector<HTMLButtonElement>('.wx-save-plan')?.addEventListener('click', () => {
+      scroll.querySelector<HTMLElement>('.wx-save-plan')?.addEventListener('click', () => {
         const rows = [...scroll.querySelectorAll<HTMLElement>('.sc-edit')];
         const blocks: PlanBlock[] = rows.map((r) => {
           const times = [...r.querySelectorAll<HTMLInputElement>('.sc-in-time')].map((i) => toHours(i.value));
           const text = r.querySelector<HTMLInputElement>('.sc-in-text')?.value.trim() || '待着';
-          const [s, e] = times;
+          const s = times[0];
+          const e = times[1];
           return { start: s, end: Math.max(s + 0.5, e), placeId: 'walk', kind: 'want', label: text };
         });
         cb.onSaveMyPlan(blocks);
@@ -1280,53 +2030,64 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           cb.onSaveMyPlan(blocks);
         }),
       );
-    }
-
-    function toHours(v: string): number {
-      const m = /^(\d{1,2}):(\d{2})$/.exec(v.trim());
-      if (!m) return 9;
-      return (Number(m[1]) % 24) + Number(m[2]) / 60;
+      // 实体购买
+      scroll.querySelector<HTMLElement>('.ph-buy-btn')?.addEventListener('click', () => {
+        if (cb.onBuyPhysical()) {
+          lastSig = '';
+          if (lastSave) paint(lastSave);
+        }
+      });
     }
 
     function paint(save: SaveData): void {
       clockEl.textContent = formatClock(save.clock);
-      const isTab = !SUB_PAGES.includes(page);
-      tabs.hidden = !isTab;
-      appbar.hidden = isTab;
-      titleEl.textContent = TITLES[page] ?? (owner === 'her' ? '她的手机' : '我的手机');
-      foot.hidden = !canSend(chatId);
+      const inWechatTab = page === 'wechat' && WX_TABS.includes(wx);
+      tabs.hidden = !inWechatTab;
+      appbar.hidden = page === 'home';
+      titleEl.textContent = TITLES[wx] ?? TITLES[page] ?? '';
+      foot.hidden = !(page === 'wechat' && wx === 'chat' && canSend(chatId));
+      // 聊天页：重绘前记住"是否本来就贴着底部"，重绘后按需滚到底（不打断玩家上翻看历史）
+      const chatView = page === 'wechat' && wx === 'chat';
+      const nearBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 56;
       scroll.innerHTML = bodyFor(save);
       bindBody(save);
-      tabs.querySelectorAll<HTMLElement>('[data-tab]').forEach((b) =>
-        b.classList.toggle('on', b.dataset.tab === page),
-      );
-      const un = totalUnread(save);
+      if (chatView && nearBottom) scroll.scrollTop = scroll.scrollHeight;
+      tabs.querySelectorAll<HTMLElement>('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === wx));
+      let un = totalUnread(save);
+      // 阶段 0 + 好友申请待处理 → 通讯录 tab 强制显示红点
+      const openingPending = save.metPeople.find((p) => p.id === 'her-opening' && !p.added);
+      if (openingPending) un = Math.max(un, 1);
       dot.hidden = un === 0;
-    }
-
-    function go(p: PhonePage): void {
-      page = p;
-      if (!SUB_PAGES.includes(p)) lastTab = p;
-      if (p !== 'chat') chatId = null;
-      lastSig = '';
-      if (lastSave) paint(lastSave);
     }
 
     function openChat(contactId: string): void {
       chatId = contactId;
-      page = 'chat';
-      if (canSendForRead(contactId)) unreadReal = 0;
+      page = 'wechat';
+      wx = 'chat';
+      if (owner === 'me' && contactId === 'her') unreadReal = 0;
       cb.onReadThread(owner, contactId);
       lastSig = '';
       if (lastSave) paint(lastSave);
+      scroll.scrollTop = scroll.scrollHeight; // 进入聊天直接看到最新
       if (canSend(contactId)) window.setTimeout(() => input.focus(), 60);
     }
 
-    // 事件绑定
-    tabs.querySelectorAll<HTMLElement>('[data-tab]').forEach((b) =>
-      b.addEventListener('click', () => go(b.dataset.tab as PhonePage)),
-    );
-    panel.querySelector<HTMLElement>('.wx-back')!.addEventListener('click', () => go(lastTab));
+    // 返回：微信子页 → 微信 tab → 主屏
+    const back = (): void => {
+      if (page === 'wechat') {
+        if (WX_TABS.includes(wx)) {
+          page = 'home';
+        } else {
+          wx = lastWx;
+        }
+      } else {
+        page = 'home';
+      }
+      lastSig = '';
+      if (lastSave) paint(lastSave);
+    };
+    panel.querySelector<HTMLElement>('.wx-back')!.addEventListener('click', back);
+
     const send = (): void => {
       const v = input.value.trim();
       if (!v || !chatId) return;
@@ -1343,9 +2104,17 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
 
     return {
       onShow() {
-        page = 'chats';
-        lastTab = 'chats';
+        page = 'home';
+        wx = 'chats';
+        lastWx = 'chats';
         chatId = null;
+        lastSig = '';
+        if (lastSave) paint(lastSave);
+      },
+      openContacts() {
+        page = 'wechat';
+        wx = 'contacts';
+        lastWx = 'contacts';
         lastSig = '';
         if (lastSave) paint(lastSave);
       },
@@ -1359,7 +2128,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
         paint(save);
       },
       notifyHerMsg() {
-        const viewing = open === 'myphone' && page === 'chat' && chatId === 'her';
+        const viewing = open === 'myphone' && page === 'wechat' && wx === 'chat' && chatId === 'her';
         if (viewing) return;
         unreadReal += 1;
         lastSig = '';
@@ -1415,7 +2184,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       (pl) =>
         `<li class="${pl.id === here ? 'here' : ''}">
           <span class="pl-e">${pl.emoji}</span>
-          <span class="pl-n">${pl.name}${pl.id === here ? '<i>· 她在这</i>' : ''}</span>
+          <span class="pl-n">${pl.name}${pl.id === here ? `<i>· ${t}在这</i>` : ''}</span>
           <span class="pl-d">${pl.desc}</span>
         </li>`,
     ).join('');
