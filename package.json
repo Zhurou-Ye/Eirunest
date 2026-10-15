@@ -3,13 +3,17 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "少年 AI 同居养成 · 原型",
+  "description": "面向长期陪伴的生成式 AI 角色与交互叙事研究原型",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host",
     "typecheck": "tsc --noEmit",
     "test": "node test/guard.test.mjs",
+    "test:evolution": "node test/evolution.test.mjs",
+    "test:story": "node test/story.test.mjs",
+    "test:npc": "node test/npc.test.mjs",
+    "test:ui": "node test/e2e-ui.mjs",
     "fetch-models": "node scripts/fetch-live2d-models.mjs"
   },
   "devDependencies": {
