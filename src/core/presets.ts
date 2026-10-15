@@ -1,4 +1,4 @@
-import type { Appearance, Personality, PersonalityPreset } from './types';
+import type { Appearance, Personality, PersonalityPreset, Traits } from './types';
 
 /**
  * 角色预设数据。
@@ -84,5 +84,18 @@ export const DEFAULT_NAMES: Record<PersonalityPreset, string> = {
   cool: '江野',
   sunny: '夏河',
   clingy: '栗川',
+};
+
+/**
+ * traits 的起始值。
+ *
+ * 注意这里只是"起点"，不是"设定"：进游戏之后这些数会被经历推动，
+ * 同一副预设玩久了也可能跑到别的方向去——这正是我们要的效果。
+ */
+export const TRAIT_PRESETS: Record<PersonalityPreset, Traits> = {
+  gentle: { expressiveness: 0.5, clinginess: 0.5, guardedness: 0.35 },
+  cool: { expressiveness: 0.3, clinginess: 0.25, guardedness: 0.6 },
+  sunny: { expressiveness: 0.75, clinginess: 0.5, guardedness: 0.3 },
+  clingy: { expressiveness: 0.7, clinginess: 0.85, guardedness: 0.5 },
 };
 
