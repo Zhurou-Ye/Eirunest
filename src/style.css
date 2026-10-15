@@ -145,30 +145,39 @@ body {
 /* ── 气泡 ─────────────────────────────── */
 .bubble-wrap {
   position: absolute;
-  left: 16px;
-  bottom: calc(var(--safe-bottom) + 128px);
+  left: 50%;
+  bottom: calc(var(--safe-bottom) + 18px);
+  transform: translateX(-50%);
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
-  max-width: 76vw;
+  width: min(640px, 92vw);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.bubble-wrap > * {
+  pointer-events: auto;
 }
 
 .bubble {
   position: relative;
-  padding: 11px 15px;
-  border-radius: 4px 16px 16px 16px;
-  background: var(--panel-solid);
+  width: 100%;
+  padding: 13px 18px;
+  border-radius: 18px;
+  background: rgba(24, 18, 15, 0.92);
   border: 0.5px solid var(--line);
-  font-size: 14.5px;
-  line-height: 1.7;
-  letter-spacing: 0.01em;
+  font-size: 15px;
+  line-height: 1.75;
+  letter-spacing: 0.02em;
+  text-align: center;
   min-height: 20px;
   opacity: 0;
-  transform: translateY(8px);
+  transform: translateY(10px);
   transition:
-    opacity 0.24s var(--ease),
-    transform 0.24s var(--ease);
+    opacity 0.28s var(--ease),
+    transform 0.28s var(--ease);
 }
 
 .bubble.on {
@@ -176,26 +185,13 @@ body {
   transform: translateY(0);
 }
 
-.bubble::before {
-  content: '';
-  position: absolute;
-  left: -5px;
-  bottom: 10px;
-  width: 10px;
-  height: 10px;
-  background: var(--panel-solid);
-  border-left: 0.5px solid var(--line);
-  border-bottom: 0.5px solid var(--line);
-  transform: rotate(45deg);
-}
-
 .think {
   display: flex;
-  gap: 4px;
-  padding: 10px 14px;
-  background: var(--panel-solid);
+  gap: 5px;
+  padding: 12px 18px;
+  background: rgba(24, 18, 15, 0.92);
   border: 0.5px solid var(--line);
-  border-radius: 4px 16px 16px 16px;
+  border-radius: 18px;
 }
 
 .think span {
@@ -1263,7 +1259,7 @@ body {
 .away-note {
   position: absolute;
   left: 50%;
-  bottom: calc(var(--safe-bottom) + 150px);
+  top: calc(var(--safe-top) + 70px);
   transform: translateX(-50%);
   z-index: 3;
   display: flex;
@@ -2229,6 +2225,44 @@ body {
   color: #f6fff3;
 }
 
+/* 图片消息：不是文字气泡，是一张可点开的缩略图（微信里图片就是一条记录） */
+.wx-bub-img {
+  padding: 0;
+  max-width: 62%;
+  background: none;
+  line-height: 0;
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: zoom-in;
+}
+
+.wx-line.mine .wx-bub-img {
+  background: none;
+}
+
+.wx-img {
+  display: block;
+  width: 100%;
+  max-height: 240px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 0.5px solid var(--line);
+}
+
+.wx-img-cap {
+  display: block;
+  padding: 5px 2px 0;
+  font-style: normal;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #c6d1d8;
+}
+
+/* 全屏看图：点背景或按钮都能关 */
+.img-viewer .story-map-img {
+  cursor: zoom-out;
+}
+
 /* 朋友圈发布 */
 .wx-post {
   margin: 12px 12px 4px;
@@ -2380,6 +2414,300 @@ body {
   color: #dfe6ee;
 }
 
+/* 通讯录里的状态小标 / 新朋友 / 头像 / 状态 / 相机 / 天气 / 真图 */
+.wx-st {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+  font-style: normal;
+  font-size: 10px;
+  color: rgba(233, 238, 245, 0.72);
+}
+
+.wx-sub {
+  border-top: 8px solid rgba(255, 255, 255, 0.045);
+  padding-bottom: 12px;
+}
+
+.wx-sub[hidden] {
+  display: none;
+}
+
+.wx-pending {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 14px;
+}
+
+.wx-accept {
+  flex: none;
+  padding: 5px 13px;
+  border-radius: 999px;
+  border: none;
+  background: #4f9d5c;
+  color: #f2fff0;
+  font-size: 11.5px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.wx-contact.static {
+  cursor: default;
+}
+
+.wx-badge.inline {
+  position: static;
+  margin-left: 6px;
+}
+
+/* 微信状态 */
+.wx-status,
+.wx-status-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: calc(100% - 28px);
+  margin: 10px 14px 4px;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.wx-st-emoji {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 15px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.wx-st-txt {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wx-st-txt b {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #eef3f8;
+}
+
+.wx-st-txt i {
+  font-style: normal;
+  font-size: 10.5px;
+  color: rgba(233, 238, 245, 0.5);
+}
+
+.wx-chat-status {
+  margin: 6px 14px 2px;
+  padding: 6px 10px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 11px;
+  color: rgba(233, 238, 245, 0.7);
+  text-align: center;
+}
+
+/* 换头像 */
+.wx-avatars {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  padding: 4px 14px 18px;
+}
+
+.wx-av {
+  aspect-ratio: 1 / 1;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 26px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.wx-av.on {
+  border-color: #4f9d5c;
+  background: rgba(79, 157, 92, 0.18);
+}
+
+/* 发状态 */
+.wx-words {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  padding: 4px 14px 12px;
+}
+
+.wx-word {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 11px 4px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.045);
+  cursor: pointer;
+  font-family: inherit;
+  color: #dfe6ee;
+}
+
+.wx-word span {
+  font-size: 20px;
+}
+
+.wx-word em {
+  font-style: normal;
+  font-size: 10.5px;
+}
+
+.wx-word.on {
+  border-color: #4f9d5c;
+  background: rgba(79, 157, 92, 0.16);
+}
+
+.wx-status-write {
+  display: flex;
+  gap: 8px;
+  padding: 0 14px 8px;
+}
+
+.wx-status-in {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border-radius: 9px;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e9eef5;
+  font-size: 12.5px;
+  outline: none;
+  font-family: inherit;
+}
+
+.wx-status-ok {
+  flex: none;
+  padding: 0 15px;
+  border-radius: 9px;
+  border: none;
+  background: #4f9d5c;
+  color: #f2fff0;
+  font-size: 12.5px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.wx-status-end {
+  padding: 0 14px 18px;
+}
+
+.wx-status-clear {
+  padding: 7px 15px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: none;
+  color: rgba(233, 238, 245, 0.6);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+/* 相机 */
+.wx-cam {
+  margin: 4px 14px 12px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: #0b0e13;
+}
+
+.wx-shot {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+}
+
+.wx-cam-foot {
+  display: flex;
+  justify-content: center;
+  padding-bottom: 18px;
+}
+
+.wx-shoot {
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.5);
+  background: rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+}
+
+/* 天气 */
+.wx-weather {
+  padding: 22px 18px 18px;
+  text-align: center;
+}
+
+.wx-w-big {
+  font-size: 34px;
+  font-weight: 300;
+  color: #f2f6fa;
+}
+
+.wx-w-sub {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: rgba(233, 238, 245, 0.55);
+}
+
+.wx-w-rows {
+  margin-top: 18px;
+  text-align: left;
+}
+
+.wx-w-rows .row {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 2px;
+  border-bottom: 0.5px solid rgba(255, 255, 255, 0.07);
+  font-size: 12.5px;
+  color: rgba(233, 238, 245, 0.6);
+}
+
+.wx-w-rows .row b {
+  font-weight: 500;
+  color: #eef3f8;
+}
+
+/* 相册 / 朋友圈里的真图 */
+.pp-img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+}
+
+.mo-img {
+  display: block;
+  width: 100%;
+  margin-top: 9px;
+  border-radius: 9px;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+}
+
 /* ── 横屏 / 矮屏适配 ──────────────────── */
 @media (orientation: landscape) and (max-height: 500px) {
   .panel-card {
@@ -2396,8 +2724,11 @@ body {
     top: calc(var(--safe-top) + 12px);
   }
   .bubble-wrap {
-    bottom: calc(var(--safe-bottom) + 76px);
-    max-width: 60vw;
+    bottom: calc(var(--safe-bottom) + 12px);
+    width: min(560px, 90vw);
+  }
+  .away-note {
+    top: calc(var(--safe-top) + 60px);
   }
   .boot-title {
     font-size: 30px;
@@ -2408,4 +2739,555 @@ body {
   .role-card {
     flex: 1;
   }
+}
+/* ── 主线剧情：主屏 APP 宫格 + 锁住状态 ── */
+.ph-app.locked {
+  filter: grayscale(0.7);
+  opacity: 0.55;
+}
+.ph-app.locked .ph-ico {
+  filter: blur(0.3px);
+}
+
+.ph-locked {
+  padding: 24px 18px;
+  text-align: center;
+  color: #e6e6f0;
+}
+.ph-locked .ph-lock-ico {
+  font-size: 42px;
+  filter: drop-shadow(0 0 8px rgba(255, 200, 220, 0.4));
+}
+.ph-locked h3 {
+  font-size: 17px;
+  font-weight: 500;
+  margin: 12px 0 8px;
+  letter-spacing: 1px;
+}
+.ph-locked p {
+  font-size: 13px;
+  line-height: 1.7;
+  color: #c7c7d4;
+  margin: 6px 0;
+}
+.ph-locked b { color: #ff9eb5; }
+.ph-lock-bar {
+  margin: 14px auto 6px;
+  width: 80%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.ph-lock-bar span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #ff9eb5, #ffd1a3);
+  transition: width 0.4s;
+}
+.ph-lock-tip {
+  font-size: 11px;
+  color: #999;
+}
+
+/* ── 那边的世界（相册 + 朋友圈缩略） ── */
+.ph-world {
+  padding: 12px 14px;
+  color: #e6e6f0;
+}
+.ph-world h4 {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  color: #ffd1a3;
+  margin: 14px 0 8px;
+}
+.ph-album {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.ph-photo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ph-photo img,
+.ph-photo-fake {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-radius: 6px;
+}
+.ph-photo-fake {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 22px;
+}
+.ph-photo em {
+  font-size: 10px;
+  color: #b6b6c2;
+  font-style: normal;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ph-moments {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ph-mom {
+  background: rgba(255, 255, 255, 0.04);
+  padding: 8px 10px;
+  border-radius: 8px;
+  border-left: 2px solid #ff9eb5;
+}
+.ph-mom-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.ph-mom-head .ph-ava {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #555;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+}
+.ph-mom-head b { flex: 1; color: #ffe3ee; }
+.ph-mom-head i { font-style: normal; color: #888; font-size: 10px; }
+.ph-mom-text {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #d8d8e2;
+  margin-top: 4px;
+}
+.ph-mom-foot {
+  font-size: 10px;
+  color: #888;
+  margin-top: 4px;
+}
+.ph-empty {
+  font-size: 12px;
+  color: #888;
+  font-style: italic;
+  text-align: center;
+  padding: 8px 0;
+}
+
+/* ── 实体购买页 ── */
+.ph-physical {
+  padding: 24px 18px;
+  text-align: center;
+  color: #e6e6f0;
+}
+.ph-physical h3 {
+  font-size: 18px;
+  font-weight: 400;
+  margin: 12px 0 14px;
+  letter-spacing: 2px;
+  color: #ffd1a3;
+}
+.ph-physical p {
+  font-size: 13px;
+  line-height: 1.8;
+  color: #c7c7d4;
+  margin: 6px 0;
+}
+.ph-physical.on h3 { color: #ff9eb5; }
+.ph-buy-row {
+  display: flex;
+  justify-content: space-between;
+  margin: 18px 4px 12px;
+  font-size: 13px;
+  color: #c7c7d4;
+}
+.ph-buy-row b { color: #ff9eb5; font-size: 15px; }
+.ph-buy-btn {
+  width: 100%;
+  padding: 12px;
+  background: linear-gradient(135deg, #ff9eb5, #ffd1a3);
+  color: #2a1a1f;
+  border: none;
+  border-radius: 22px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  cursor: pointer;
+  margin-top: 10px;
+  box-shadow: 0 4px 16px rgba(255, 158, 181, 0.3);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.ph-buy-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 20px rgba(255, 158, 181, 0.45);
+}
+.ph-buy-btn:disabled {
+  background: #555;
+  color: #999;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* ── 剧情解锁的独白弹窗 ── */
+.story-mono {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, rgba(40, 20, 50, 0.85), rgba(0, 0, 0, 0.95));
+  z-index: 9999;
+  animation: story-mono-in 0.6s ease;
+  backdrop-filter: blur(6px);
+}
+.story-mono.out {
+  animation: story-mono-out 0.6s ease forwards;
+}
+.story-mono-card {
+  max-width: 360px;
+  padding: 32px 28px 24px;
+  background: linear-gradient(160deg, #2a1f3a, #1a1428);
+  border: 1px solid rgba(255, 209, 163, 0.3);
+  border-radius: 16px;
+  text-align: center;
+  box-shadow: 0 12px 48px rgba(255, 158, 181, 0.2);
+}
+.story-mono-title {
+  font-size: 12px;
+  letter-spacing: 6px;
+  color: #ffd1a3;
+  margin-bottom: 16px;
+}
+.story-mono-text {
+  font-size: 16px;
+  line-height: 2;
+  color: #fff;
+  font-weight: 300;
+  letter-spacing: 1px;
+  margin: 16px 0 24px;
+}
+.story-mono-ok {
+  padding: 8px 28px;
+  background: transparent;
+  border: 1px solid #ff9eb5;
+  color: #ff9eb5;
+  border-radius: 18px;
+  font-size: 13px;
+  letter-spacing: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.story-mono-ok:hover {
+  background: rgba(255, 158, 181, 0.15);
+}
+.story-choice-card { width: min(440px, calc(100vw - 36px)); }
+.story-choice-options { display: grid; gap: 10px; }
+.story-choice-options button {
+  padding: 12px 14px; border: 1px solid rgba(255,209,163,.35); border-radius: 12px;
+  background: rgba(255,255,255,.06); color: #fff; text-align: left; line-height: 1.6; cursor: pointer;
+}
+.story-choice-options button:hover { background: rgba(255,158,181,.16); }
+.story-address-input {
+  width: 100%; box-sizing: border-box; margin: 0 0 16px; padding: 12px;
+  border: 1px solid rgba(255,209,163,.4); border-radius: 10px; outline: none;
+  background: rgba(255,255,255,.08); color: #fff; font: inherit;
+}
+.story-map-card { width: min(650px, calc(100vw - 36px)); }
+.story-map-card svg { display: block; width: 100%; border-radius: 14px; }
+/* 她发过来的异世界地图（艾斯兰大陆全图）：真图，别再换回 SVG 占位 */
+.story-map-img {
+  display: block;
+  width: 100%;
+  border-radius: 14px;
+  background: #eaf3f0;
+  /* 竖屏手机上限制高度，否则一张横图会把说明和按钮顶出屏幕 */
+  max-height: 58vh;
+  object-fit: contain;
+}
+.story-map-card p { color: #f5e9dc; font-size: 14px; }
+@keyframes story-mono-in {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes story-mono-out {
+  from { opacity: 1; }
+  to { opacity: 0; transform: scale(1.05); }
+}
+
+/* ── 阶段 0：开局好友申请卡 ── */
+.wx-pending.opening {
+  position: relative;
+  background: linear-gradient(160deg, rgba(255, 158, 181, 0.12), rgba(255, 209, 163, 0.08));
+  border: 1px dashed rgba(255, 209, 163, 0.5);
+  border-radius: 12px;
+  padding: 14px 12px;
+  margin: 8px 4px 14px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.wx-pending.opening > .wx-ava {
+  width: 48px;
+  height: 48px;
+  font-size: 28px;
+}
+.wx-pending.opening .wx-opening-badge {
+  position: absolute;
+  top: -8px;
+  right: 12px;
+  padding: 2px 8px;
+  background: linear-gradient(135deg, #ff9eb5, #ffd1a3);
+  color: #2a1a1f;
+  font-size: 10px;
+  font-weight: 600;
+  border-radius: 8px;
+  letter-spacing: 1px;
+  box-shadow: 0 2px 8px rgba(255, 158, 181, 0.3);
+}
+.wx-pending.opening .wx-opening-source {
+  display: block;
+  font-size: 10px;
+  color: #999;
+  margin-top: 4px;
+  font-style: italic;
+}
+.wx-pending.opening .wx-accept {
+  align-self: flex-end;
+  padding: 6px 18px;
+  background: linear-gradient(135deg, #ff9eb5, #ffd1a3);
+  color: #2a1a1f;
+  border: none;
+  border-radius: 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 4px;
+}
+.wx-pending.opening .wx-accept:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 3px 10px rgba(255, 158, 181, 0.4);
+}
+
+/* ── 微信消息空状态引导 ── */
+.wx-empty-guide {
+  text-align: center;
+  padding: 48px 20px;
+  color: #c7c7d4;
+}
+.wx-empty-guide .wx-empty-ico {
+  font-size: 48px;
+  margin-bottom: 12px;
+  filter: drop-shadow(0 0 12px rgba(255, 158, 181, 0.3));
+}
+.wx-empty-guide h4 {
+  font-size: 16px;
+  font-weight: 500;
+  margin: 0 0 8px;
+  color: #ffe3ee;
+}
+.wx-empty-guide p {
+  font-size: 12px;
+  line-height: 1.8;
+  color: #999;
+  margin: 0;
+}
+
+/* ── 微信「对方正在输入…」气泡 ── */
+.wx-typing {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 12px;
+}
+.wx-typing i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #b9b9c6;
+  animation: wx-typing-dot 1.2s infinite ease-in-out both;
+}
+.wx-typing i:nth-child(2) { animation-delay: 0.18s; }
+.wx-typing i:nth-child(3) { animation-delay: 0.36s; }
+@keyframes wx-typing-dot {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+/* ── 抽屉入口：锁住状态（阶段 0 看不见她的手机）── */
+.drawer-item.locked {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.drawer-item.locked span::after {
+  content: ' 🔒';
+  font-size: 11px;
+}
+
+/* ── 状态面板：羁绊进度 / 购买实体 ── */
+.story-progress {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 245, 235, 0.05);
+  border: 0.5px solid var(--line);
+}
+.story-progress span {
+  display: block;
+  font-size: 14px;
+  color: var(--ink);
+}
+.story-progress p {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-dim);
+}
+.story-progress.on {
+  border-color: rgba(232, 168, 124, 0.35);
+  background: var(--accent-soft);
+}
+.story-progress.on span {
+  color: var(--accent);
+}
+
+/* ── 状态面板：人格倾向（会被经历改写） ── */
+.trait-box {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(255, 245, 235, 0.05);
+  border: 0.5px solid var(--line);
+}
+.trait-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+.trait-row:last-of-type {
+  margin-bottom: 0;
+}
+.trait-k {
+  flex: 0 0 46px;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+.trait-bar {
+  flex: 1;
+  height: 5px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+.trait-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, rgba(232, 168, 124, 0.55), var(--accent));
+  transition: width 0.4s var(--ease);
+}
+.trait-v {
+  flex: 0 0 26px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+}
+.trait-note {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--accent);
+}
+.trait-idx {
+  margin: 12px 0 6px;
+  font-size: 11px;
+  color: var(--ink-dim);
+  letter-spacing: 0.04em;
+}
+.trait-hist {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.trait-hist li {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--ink-dim);
+}
+.trait-hist li > i {
+  flex: 0 0 52px;
+  font-style: normal;
+  color: rgba(232, 168, 124, 0.7);
+}
+
+/* ── 微信：设置备注和标签 ── */
+.wx-remark {
+  padding: 16px 14px;
+}
+.wx-remark-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.wx-remark-row {
+  margin-bottom: 16px;
+}
+.wx-remark-row label {
+  display: block;
+  font-size: 12px;
+  color: rgba(233, 238, 245, 0.55);
+  margin-bottom: 8px;
+}
+.wx-remark-in {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: #e9eef5;
+  font-size: 14px;
+  outline: none;
+  font-family: inherit;
+}
+.wx-remark-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.wx-remark-tag {
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  background: transparent;
+  color: rgba(233, 238, 245, 0.7);
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.wx-remark-tag.on {
+  background: #4f9d5c;
+  color: #f2fff0;
+  border-color: #4f9d5c;
+}
+.wx-remark-done {
+  width: 100%;
+  padding: 11px;
+  border-radius: 10px;
+  border: none;
+  background: #4f9d5c;
+  color: #f2fff0;
+  font-size: 14px;
+  cursor: pointer;
+  font-family: inherit;
 }
