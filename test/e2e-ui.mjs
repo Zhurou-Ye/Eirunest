@@ -557,7 +557,7 @@ async function main() {
         gender: d.character.personality.gender,
         drawer: document.getElementById('drawer-phone-label')?.textContent ?? '',
         status: document.getElementById('status-title')?.textContent ?? '',
-        memory: document.getElementById('memory-title')?.textContent ?? '',
+        memory: document.getElementById('memory-label')?.textContent ?? '',
       });
     })()`,
     'male-labels',
