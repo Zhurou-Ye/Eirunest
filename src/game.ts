@@ -44,7 +44,8 @@ import type { CharacterProfile } from './core/profile';
 import {
   buildOpeningScript,
   scheduleNode,
-  FRIEND_VERIFIED_SYS,
+  friendVerifiedSys,
+  GREETING_DIVIDER,
   type OpeningScript,
   type OpeningNode,
 } from './core/opening';
@@ -115,8 +116,8 @@ export class Game {
   private openingScript: OpeningScript | null = null;
   /** 玩家跳过剧本直接打字聊 → 放弃剩余台词，交给模型 */
   private openingAbandoned = false;
-  /** 已经播过的 OS（心里话），避免同一条反复刷 */
-  private lastOsText = '';
+  /** 已经播过的内心话，避免同一条反复刷 */
+  private lastNeixinKey = '';
   /**
    * 世界是否已"连上"（阶段 ≥ 1）：决定她的立绘与她的日常是否可见。
    * 初值必须是 null 而不是 false —— 否则开局就是 false，跟阶段 0 的 false 判等，
@@ -151,6 +152,7 @@ export class Game {
     // 之前反过来导致 room-canvas 取到 null。
     this.ui = mountUI(root, {
       onSend: (text) => void this.sendToModel(text),
+      openingInputLocked: () => this.openingInputLocked(),
       onTouch: (part) => void this.handleTouch(part),
       onGift: (id) => void this.handleGift(id),
       onActivity: (id) => void this.handleActivity(id),
@@ -177,10 +179,12 @@ export class Game {
       onEquipAccessory: (id) => this.equipAccessory(id),
       onStartJob: (id) => this.startJob(id),
       onLikeMoment: (id) => this.store.toggleMomentLike(id),
+      onCommentMoment: (id, text) => this.store.addMomentComment(id, 'me', this.store.state.playerName, text),
       onPostMoment: (text) => void this.postMoment(text),
       onWriteMyDiary: (text) => this.writeMyDiary(text),
       onSaveMyPlan: (blocks) => this.saveMyPlan(blocks),
       onReadThread: (owner, contactId) => this.store.markThreadRead(owner, contactId),
+      onChatPref: (contactId, patch) => this.store.setChatPref(contactId, patch),
       onSetAvatar: (owner, emoji) => this.store.setAvatar(owner, emoji),
       onSetStatus: (owner, s) => {
         this.store.setStatus(owner, s);
@@ -198,14 +202,20 @@ export class Game {
         if (wasOpening) {
           this.openingAbandoned = false;
           this.openingScript = this.buildOpening();
-          // 真微信通过验证后聊天里的第一条就是这条灰字（不是她说的）
-          this.store.addChatMsg('me', 'her', 'sys', FRIEND_VERIFIED_SYS, false);
           const node = this.openingScript.root;
-          this.store.scheduleMsgs(scheduleNode(node));
-          if (node.os) {
-            this.lastOsText = Array.isArray(node.os) ? node.os.join('|') : node.os;
-            this.ui.setNeixin(node.os, true);
-          }
+          // 「开局头」三条 —— **一进聊天就都在**（真微信打开就是已经在了，延迟冒出来很怪）：
+          //   ① 她申请好友时写的那句话（申请语 / 打招呼内容，她是申请方）
+          //   ② 灰字「你已添加了X，现在可以开始聊天了」
+          //   ③ 灰字「以上是打招呼的内容」
+          // 只有她**新发**的招呼（「你好呀」…）才是过一会儿才来的 —— 那才是对话的开头。
+          const applyLine = p.note || `我是${p.name}`;
+          this.store.addChatMsg('me', 'her', 'her', applyLine, false);
+          this.store.addChatMsg('me', 'her', 'sys', friendVerifiedSys(displayName), false);
+          this.store.addChatMsg('me', 'her', 'sys', GREETING_DIVIDER, false);
+          // 她"新发"的第一句先停一拍再送达
+          this.store.scheduleMsgs(scheduleNode(node, Date.now() + 2600));
+          // 注意：开场内心戏（root.neixin）已在 startGame 里播过了，这里不再重播，
+          // 否则通过好友后会把"奇奇怪怪……"那三句再放一遍。
           this.ui.addLog('她好像发了几条消息过来……');
         }
       },
@@ -369,10 +379,13 @@ export class Game {
     this.store.startNewGame(profile.personality.preset, profile.name);
     this.store.setPlayer(playerName, playerGender);
     // 重置开局相关的运行时状态（排期队列、剧本进度）
-    this.openingScript = null;
+    this.openingScript = this.buildOpening();
     this.openingAbandoned = false;
-    this.lastOsText = '';
+    this.lastNeixinKey = '';
     this.store.clearPendingMsgs();
+    // 新档开局：清掉构造函数里"离线补记"遗留在通知面板里的旧记录
+    // （startNewGame 只清数据、不清通知 DOM，不清理会出现"你离开了约X小时"的幽灵提示）
+    this.ui.clearNotifications();
     this.ui.setPlayerName(this.store.state.playerName);
     await this.switchProfile(id);
     // 同一档案时 switchProfile 会早退（不会跑到 applyProfile），
@@ -386,6 +399,18 @@ export class Game {
     
     // 玩家开机看到的提示
     this.ui.addLog('你的微信收到了一条好友申请……');
+    // 开场内心戏：玩家看到好友申请时心里的嘀咕（big 大字，点屏幕任意处推进）。
+    // 手机开局就显示在下方——上面是内心、下面是手机，玩家能直接"看到"好友申请，不再云里雾里；
+    // 但在内心戏点完之前，整屏遮罩拦截点击（连点手机也只推进剧情，跟手机不存在一样），
+    // 只有三句点完，通讯录标签才解锁。
+    const rootNode = this.openingScript.root;
+    if (rootNode.neixin) {
+      this.lastNeixinKey = Array.isArray(rootNode.neixin)
+        ? rootNode.neixin.join('|')
+        : rootNode.neixin;
+      this.ui.setNeixin(rootNode.neixin, true, true);
+    }
+    // 开局即把手机摆在下方（通讯录标签此时因门控禁用、但红点"1"亮着），等心里话点完再解锁
     this.ui.openNewGameContacts();
   }
 
@@ -1186,17 +1211,43 @@ export class Game {
 
     // 内心：每个节点最后一条台词送达时，播该节点的心里话
     const node = this.openingNodeByLastLine(lastHer.text);
-    if (node?.os) {
-      const osKey = Array.isArray(node.os) ? node.os.join('|') : node.os;
-      if (osKey !== this.lastOsText) {
-        this.lastOsText = osKey;
-        this.ui.setNeixin(node.os, true);
+    if (node?.neixin) {
+      const key = Array.isArray(node.neixin) ? node.neixin.join('|') : node.neixin;
+      if (key !== this.lastNeixinKey) {
+        this.lastNeixinKey = key;
+        this.ui.setNeixin(node.neixin, true);
       }
     }
-    // 到选择点了 → 弹快捷回复
+    // 到选择点了 → 弹快捷回复。
+    // 但她的气泡是**逐字浮现**的（每个字 26ms + 0.32s 动画，见 hud 的 staggerChars），
+    // 必须等这段动画跑完才算"说完"——否则她还在打字，底下就已经能选了。
     if (node?.options?.length) {
+      const landedAt = new Date(lastHer.iso).getTime();
+      const settleMs = Math.min([...lastHer.text].length * 26 + 320, 2200) + 260;
+      if (Number.isFinite(landedAt) && Date.now() - landedAt < settleMs) return;
       this.ui.showOpeningChoices(node.options.map((o) => o.label));
     }
+  }
+
+  /** 剧情节点有预设台词/选项时，只允许玩家通过剧情选项回应。 */
+  private openingInputLocked(): boolean {
+    if (this.openingAbandoned || this.store.state.story.phase !== 0) return false;
+    const st = this.store.state;
+    const op = st.metPeople.find((p) => p.id === 'her-opening');
+    if (!op?.added) return false;
+    if (this.store.pendingHerCount() > 0) return true;
+    if (!this.openingScript) this.openingScript = this.buildOpening();
+    const thread = st.threads.find(
+      (t) => t.owner === 'me' && t.contactId === 'her' && t.profileId === st.profileId,
+    );
+    const lastHer = [...(thread?.msgs ?? [])].reverse().find((m) => m.from === 'her');
+    if (!lastHer) return false;
+    const node = this.openingNodeByLastLine(lastHer.text);
+    if (!node) return false;
+    if (node.options?.length) return true;
+    const landedAt = new Date(lastHer.iso).getTime();
+    const settleMs = Math.min([...lastHer.text].length * 26 + 320, 2200) + 260;
+    return Number.isFinite(landedAt) && Date.now() - landedAt < settleMs;
   }
 
   /** 最后一条台词 → 节点（刷新后重建进度用） */
@@ -1216,8 +1267,9 @@ export class Game {
     this.ui.hideOpeningChoices();
     if (!choice) return;
     this.store.addChatMsg('me', 'her', 'owner', label, false);
-    this.store.scheduleMsgs(scheduleNode(choice.next));
-    if (choice.next.os) this.lastOsText = ''; // 让下一层 OS 能播
+    // leadBeats=1：玩家这句发出去之后，先隔一拍她再回，别同时冒出来
+    this.store.scheduleMsgs(scheduleNode(choice.next, Date.now(), undefined, 1));
+    this.lastNeixinKey = ''; // 让下一层内心能播
   }
 
   /**
@@ -1234,7 +1286,9 @@ export class Game {
       (t) => t.owner === 'me' && t.contactId === 'her' && t.profileId === st.profileId,
     );
     const msgs = th?.msgs ?? [];
-    if (msgs.some((m) => m.from === 'me')) return; // 玩家已经开口，不催
+    // ⚠️ 玩家自己发的话 from 是 'owner'（不是 'me'）——写错会导致
+    // "玩家明明聊过了还催在吗"（拜拜后立马追问的那个 bug）
+    if (msgs.some((m) => m.from === 'owner')) return; // 玩家已经开口，不催
     const hers = msgs.filter((m) => m.from === 'her');
     if (!hers.length) return;
     // 剧本还没播完（还在等选择）不催——那会儿她正等着玩家接话呢
@@ -1579,7 +1633,7 @@ export class Game {
   // ── 大模型对话 ───────────────────────────
   private async sendToModel(text: string): Promise<void> {
     const clean = text.trim();
-    if (!clean || this.pendingReply) return;
+    if (!clean || this.pendingReply || this.openingInputLocked()) return;
     // 开局剧本进行中玩家直接打字 = 跳过剧本：撤掉还没播的台词，
     // 否则她的固定台词会和模型的回复撞成"精分"。
     if (!this.openingAbandoned && this.store.state.story.phase === 0) {
@@ -1652,15 +1706,19 @@ export class Game {
         this.markDiarySignal(1, `和你聊「${clean.slice(0, 10)}」聊得起劲`);
       }
 
-      this.say(intent.line, false, intent);
-
-      if (intent.memorable === 1) {
-        this.store.addMemory({
-          kind: 'dialogue',
-          summary: `关于「${clean.slice(0, 12)}」，${intent.line.slice(0, 24)}`,
-          weight: 4,
-          tags: ['重要对话', mood],
-        });
+      if (intent.skip === 1) {
+        // 她选择这次不回 —— 真人不会每句都接。心情/关系已在上面的 update 里结算，
+        // 只是不发这条消息（比如玩家只是道了个别，硬接一句反而像失忆）。
+      } else {
+        this.say(intent.line, false, intent);
+        if (intent.memorable === 1) {
+          this.store.addMemory({
+            kind: 'dialogue',
+            summary: `关于「${clean.slice(0, 12)}」，${intent.line.slice(0, 24)}`,
+            weight: 4,
+            tags: ['重要对话', mood],
+          });
+        }
       }
 
       if (result.provider === 'offline') {

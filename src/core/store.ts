@@ -23,6 +23,7 @@ import { DEFAULT_PROFILE_ID } from './profile';
 import { effectiveStats } from './evolution';
 import { PHYSICAL_COST, dueMilestone, phaseFor, type Milestone } from './story';
 import { defaultNpcState } from './npc';
+import { SEED_MOMENTS } from './moments-seed';
 
 const SAVE_KEY = 'hearth-boy.save.v1';
 const SAVE_VERSION = 1;
@@ -111,6 +112,8 @@ export function createDefaultSave(
     },
     pendingMsgs: [],
     traitHistory: [],
+    chatPrefs: {},
+    registeredAt: Date.now(),
     affinityScale: 2,
   };
 }
@@ -169,16 +172,31 @@ export class Store {
         merged.perspective = merged.perspective ?? { myLastUpdate: 0, herLastCheck: 0 };
         merged.pendingMsgs = merged.pendingMsgs ?? [];
         merged.traitHistory = merged.traitHistory ?? [];
+        merged.chatPrefs = merged.chatPrefs ?? {};
+        merged.registeredAt = merged.registeredAt ?? Date.now();
         // traits 是后加的字段：老存档没有就按预设补一份起点
         if (!merged.character.traits) {
           const preset = merged.character.personality?.preset ?? 'gentle';
           merged.character.traits = { ...TRAIT_PRESETS[preset] };
         }
-        merged.moments = (merged.moments ?? []).map((m) => ({
-          ...m,
-          author: m.author ?? 'her',
-          comments: (m.comments ?? []).map((cm) => ({ ...cm, isMutual: cm.isMutual ?? (cm.by === 'her' || cm.by === 'me') })),
-        }));
+        const seedById = new Map(SEED_MOMENTS.map((moment) => [moment.id, moment]));
+        merged.moments = (merged.moments ?? []).map((m) => {
+          const seedId = m.id.startsWith('moment-seed-') ? m.id.slice('moment-seed-'.length) : '';
+          const seed = seedById.get(seedId);
+          let iso = m.iso;
+          if (seed?.time && Number.isFinite(new Date(iso).getTime())) {
+            const [hour, minute] = seed.time.split(':').map(Number);
+            const postedAt = new Date(iso);
+            postedAt.setHours(hour, minute, 0, 0);
+            iso = postedAt.toISOString();
+          }
+          return {
+            ...m,
+            iso,
+            author: m.author ?? 'her',
+            comments: (m.comments ?? []).map((cm) => ({ ...cm, isMutual: cm.isMutual ?? (cm.by === 'her' || cm.by === 'me') })),
+          };
+        });
         return merged;
       }
       }
@@ -353,7 +371,7 @@ export class Store {
    * 重复排同一批不会叠加：按 text 去重，避免切档/重启时重复。
    */
   scheduleMsgs(
-    msgs: Array<{ owner: 'her' | 'me'; contactId: string; from: 'her' | 'me'; text: string; image?: string; dueAt: number }>,
+    msgs: Array<{ owner: 'her' | 'me'; contactId: string; from: 'her' | 'me' | 'sys'; text: string; image?: string; dueAt: number }>,
   ): void {
     for (const m of msgs) {
       const dup = this.data.pendingMsgs.some(
@@ -509,6 +527,13 @@ export class Store {
     this.emit();
   }
 
+  /** 设置某个会话的偏好：置顶 / 消息免打扰 */
+  setChatPref(contactId: string, patch: { pinned?: boolean; muted?: boolean }): void {
+    const prefs = (this.data.chatPrefs = this.data.chatPrefs ?? {});
+    prefs[contactId] = { ...(prefs[contactId] ?? {}), ...patch };
+    this.emit();
+  }
+
   /** 给某条朋友圈点赞/取消 */
   toggleMomentLike(id: string): void {
     const m = this.data.moments.find((x) => x.id === id);
@@ -652,6 +677,30 @@ export class Store {
       at: 0,
       added: false,
       mutual: false,
+    });
+    // 她"过去"的朋友圈：真实日期 = 注册这一刻 - daysAgo 天（往前推，不是写死的机械日期）。
+    // 数组由旧到新，渲染时倒序 → 新的在上面。加上她之后才会出现在"我"的信息流里。
+    const nowMs = Date.now();
+    this.data.registeredAt = nowMs;
+    this.data.moments = SEED_MOMENTS.map((m, i) => {
+      const postedAt = new Date(nowMs - m.daysAgo * 86_400_000);
+      const [hour, minute] = m.time.split(':').map(Number);
+      postedAt.setHours(hour, minute, 0, 0);
+      const entry: MomentEntry = {
+        id: `moment-seed-${m.id ?? i}`,
+        profileId: this.data.profileId,
+        author: 'her',
+        iso: postedAt.toISOString(),
+        at: this.data.clock,
+        text: m.text,
+        img: m.img,
+        caption: m.caption,
+        likes: 2 + (i % 6),
+        likedByMe: false,
+        kind: 'diary',
+        comments: [],
+      };
+      return entry;
     });
     this.save();
   }

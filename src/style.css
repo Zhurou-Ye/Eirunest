@@ -210,180 +210,6 @@ body {
   animation-delay: 0.3s;
 }
 
-/* 玩家的内心独白（内心）：固定在顶部的一条。
-   视觉小说式的精致做法——半透明深色 panel + 1px 低透明细边 + 四角 L 形装饰线
-   （"画框感"）+ 毛玻璃 + 衬线斜体。和她的话、和日志都明确区分。
-   .big = 关键节拍的"标语时刻"：缓慢呼吸式放大（0.6s 缓入缓出，不闪切），
-   期间有一层很轻的呼吸光；时间到再缓慢落回常驻大小。 */
-.neixin {
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  top: calc(var(--safe-top) + 56px);
-  z-index: 6;
-  display: flex;
-  align-items: baseline;
-  gap: 9px;
-  padding: 8px 14px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 208, 138, 0.26);
-  background: rgba(30, 23, 16, 0.82);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.32);
-  opacity: 0;
-  transform: translateY(-4px);
-  transition:
-    opacity 0.45s var(--ease),
-    transform 0.6s cubic-bezier(0.22, 1, 0.36, 1),
-    padding 0.6s cubic-bezier(0.22, 1, 0.36, 1),
-    font-size 0.6s cubic-bezier(0.22, 1, 0.36, 1),
-    box-shadow 0.6s var(--ease),
-    background 0.6s var(--ease);
-  pointer-events: none;
-}
-
-.neixin.on {
-  opacity: 1;
-  transform: translateY(0);
-}
-
-/* 四角 L 形装饰线（绝对定位的小 span，画框感） */
-.neixin .cnr {
-  position: absolute;
-  width: 9px;
-  height: 9px;
-  border: 0 solid rgba(255, 208, 138, 0.65);
-  pointer-events: none;
-}
-
-.neixin .cnr.tl {
-  top: 4px;
-  left: 4px;
-  border-top-width: 1px;
-  border-left-width: 1px;
-  border-top-left-radius: 4px;
-}
-
-.neixin .cnr.tr {
-  top: 4px;
-  right: 4px;
-  border-top-width: 1px;
-  border-right-width: 1px;
-  border-top-right-radius: 4px;
-}
-
-.neixin .cnr.bl {
-  bottom: 4px;
-  left: 4px;
-  border-bottom-width: 1px;
-  border-left-width: 1px;
-  border-bottom-left-radius: 4px;
-}
-
-.neixin .cnr.br {
-  bottom: 4px;
-  right: 4px;
-  border-bottom-width: 1px;
-  border-right-width: 1px;
-  border-bottom-right-radius: 4px;
-}
-
-.neixin-tag {
-  flex: none;
-  font-size: 10px;
-  font-style: normal;
-  letter-spacing: 0.34em;
-  padding: 2px 8px 2px 10px;
-  border-radius: 999px;
-  background: rgba(255, 208, 138, 0.12);
-  border: 1px solid rgba(255, 208, 138, 0.35);
-  color: #ffd98a;
-  transition: font-size 0.6s cubic-bezier(0.22, 1, 0.36, 1), padding 0.6s cubic-bezier(0.22, 1, 0.36, 1);
-}
-
-.neixin-txt {
-  font-family: Georgia, 'Times New Roman', 'Songti SC', 'SimSun', serif;
-  font-size: 13.5px;
-  line-height: 1.75;
-  font-style: italic;
-  letter-spacing: 0.03em;
-  color: #f2d7a4;
-  transition: font-size 0.6s cubic-bezier(0.22, 1, 0.36, 1), line-height 0.6s cubic-bezier(0.22, 1, 0.36, 1), color 0.6s var(--ease);
-}
-
-/* 大字时刻：不是"跳变"，是缓慢的呼吸——字大一点、留白多一点、有一层轻光在慢慢明灭 */
-.neixin.big {
-  padding: 13px 18px;
-  background: rgba(26, 19, 13, 0.92);
-  border-color: rgba(255, 208, 138, 0.5);
-  box-shadow: 0 10px 44px rgba(0, 0, 0, 0.5);
-  animation: neixinBreathe 2.6s ease-in-out infinite;
-}
-
-.neixin.big .neixin-txt {
-  font-size: 18.5px;
-  line-height: 1.6;
-  color: #ffe9bf;
-  text-shadow: 0 0 18px rgba(255, 208, 138, 0.25);
-}
-
-.neixin.big .neixin-tag {
-  font-size: 11px;
-  padding: 3px 10px 3px 12px;
-}
-
-@keyframes neixinBreathe {
-  0%,
-  100% {
-    box-shadow: 0 10px 44px rgba(0, 0, 0, 0.5);
-  }
-  50% {
-    box-shadow: 0 10px 52px rgba(255, 208, 138, 0.16);
-  }
-}
-
-/* 微信里的系统提示（好友验证通过那种居中灰字） */
-.wx-sys {
-  margin: 10px 24px;
-  text-align: center;
-  font-size: 11px;
-  line-height: 1.6;
-  color: var(--ink-faint);
-}
-
-/* 开局剧本的快捷回复：玩家的可选台词，挂在输入栏上方 */
-.wx-quick {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px 2px;
-}
-
-.wx-quick[hidden] {
-  display: none;
-}
-
-.wx-quick-btn {
-  text-align: left;
-  font-size: 12.5px;
-  line-height: 1.5;
-  padding: 9px 12px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 208, 138, 0.45);
-  background: rgba(255, 208, 138, 0.1);
-  color: #f5e3bd;
-  cursor: pointer;
-}
-
-.wx-quick-btn:hover {
-  background: rgba(255, 208, 138, 0.2);
-}
-
-.wx-quick-btn:active {
-  transform: scale(0.99);
-}
-
 @keyframes bounce {
   0%,
   70%,
@@ -401,8 +227,7 @@ body {
 .log {
   position: absolute;
   left: 16px;
-  top: calc(var(--safe-top) + 100px);
-  z-index: 5; /* 压在手机面板的蒙版之上（否则日志被 blur+压暗看不清），但低于 OS 栏 */
+  top: calc(var(--safe-top) + 76px);
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -1434,7 +1259,7 @@ body {
 .away-note {
   position: absolute;
   left: 50%;
-  top: calc(var(--safe-top) + 100px);
+  top: calc(var(--safe-top) + 70px);
   transform: translateX(-50%);
   z-index: 3;
   display: flex;
@@ -2086,9 +1911,10 @@ body {
 
 /* ── 微信 ─────────────────────────────── */
 .wx-appbar {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
   height: 42px;
   padding: 0 8px;
   flex: none;
@@ -2097,11 +1923,33 @@ body {
   color: #e9eef5;
 }
 
+/* 微信的标题是**居中**的（返回箭头绝对定位在左，不占位挤压标题） */
+.wx-title {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 500;
+  color: #e9eef5;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .wx-appbar[hidden] {
   display: none;
 }
 
 .wx-back {
+  position: absolute;
+  left: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 30px;
   height: 30px;
   border: none;
@@ -2160,6 +2008,11 @@ body {
   font-family: inherit;
 }
 
+.wx-input:disabled,
+#ui-input:disabled { opacity: .65; cursor: not-allowed; }
+.wx-send:disabled,
+#btn-send:disabled { opacity: .45; cursor: not-allowed; }
+
 .wx-tabs {
   flex: none;
   display: grid;
@@ -2197,6 +2050,11 @@ body {
 
 .wx-tabs button.on {
   color: #4f9d5c;
+}
+
+.wx-tabs button[disabled] {
+  opacity: 0.4;
+  pointer-events: none;
 }
 
 .wx-dot {
@@ -2328,6 +2186,54 @@ body {
   text-align: center;
 }
 
+/* 置顶聊天：整行底色加深一点点（跟普通行区分开） */
+.wx-chat.pinned { background: rgba(255, 255, 255, 0.06); }
+.wx-chat.pinned:active { background: rgba(255, 255, 255, 0.1); }
+
+/* 免打扰的小铃铛（划线）：代替红点角标 */
+.wx-mute-i {
+  font-size: 11px;
+  font-style: normal;
+  opacity: 0.75;
+}
+
+/* 聊天信息里的开关行（置顶 / 免打扰）：文字左、开关右。
+   ⚠️ 必须用 `.wx-row.wx-toggle-row`（两个类）——因为 `.panel label{display:block}`
+   和 `.panel label input{display:block;width:100%}` 是 (0,1,1)/(0,1,2)，
+   单类的 `.wx-toggle-row` 压不过，会被掰成竖排、input 撑满整行。 */
+.wx-row.wx-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+.wx-row.wx-toggle-row .wx-row-t {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+}
+.wx-row-sub {
+  font-style: normal;
+  font-weight: 400;
+  font-size: 10.5px;
+  color: #8f97a2;
+}
+.wx-toggle-row .wx-pref-toggle {
+  display: inline-block;
+  flex: none;
+  margin: 0 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  accent-color: #4f9d5c;
+  cursor: pointer;
+}
+
 .wx-row-i {
   width: 26px;
   text-align: center;
@@ -2384,78 +2290,21 @@ body {
   background: rgba(255, 255, 255, 0.09);
 }
 
-/* 对话气泡：视觉小说式的"精美卡片"——暖色渐变底 + 1px 细边（低透明度）
-   + 画出来的角花 + 软影 + 衬线字。她的（象牙/玫瑰金）和我的（鼠尾草/橄榄金）
-   各一套，角花是 public/ui/flourish-*.png（画图 API 生成后裁的角部）。 */
+/* 微信原色气泡：对方白底、自己 #95EC69 绿底，圆角 6px */
 .wx-bub {
-  position: relative;
   max-width: 68%;
-  padding: 12px 14px 10px;
-  border-radius: 12px;
-  font-size: 13.5px;
-  line-height: 1.7;
-  font-family: Georgia, 'Times New Roman', 'Songti SC', 'SimSun', serif;
-  letter-spacing: 0.02em;
+  padding: 8px 11px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.55;
+  background: #ffffff;
+  color: #1f1f1f;
   word-break: break-word;
-  background:
-    url('/ui/flourish-her-tl.png') left top / 48px no-repeat,
-    url('/ui/flourish-her-tr.png') right top / 48px no-repeat,
-    linear-gradient(180deg, rgba(253, 246, 236, 0.97), rgba(248, 236, 217, 0.97));
-  border: 1px solid rgba(193, 143, 92, 0.5);
-  box-shadow:
-    0 3px 14px rgba(58, 34, 14, 0.14),
-    inset 0 0 14px rgba(255, 236, 202, 0.4);
-  color: #4a3524;
 }
 
 .wx-line.mine .wx-bub {
-  background:
-    url('/ui/flourish-me-tl.png') left top / 48px no-repeat,
-    url('/ui/flourish-me-tr.png') right top / 48px no-repeat,
-    linear-gradient(180deg, rgba(242, 248, 236, 0.97), rgba(230, 242, 216, 0.97));
-  border-color: rgba(150, 165, 105, 0.55);
-  box-shadow:
-    0 3px 14px rgba(30, 45, 20, 0.12),
-    inset 0 0 14px rgba(240, 250, 225, 0.45);
-  color: #3d4a33;
-}
-
-/* 最新一条的入场：气泡轻轻落定 + 文字逐字浮出（动漫对话的节奏） */
-.wx-line.fresh {
-  animation: lineIn 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-@keyframes lineIn {
-  from {
-    opacity: 0;
-    transform: translateY(5px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.wx-line.fresh .wx-bub .ch {
-  display: inline-block;
-  animation: chIn 0.32s ease both;
-}
-
-@keyframes chIn {
-  from {
-    opacity: 0;
-    transform: translateY(3px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-/* 系统提示（好友验证那种灰字）保持不参与动效 */
-.wx-line .wx-sys,
-.wx-sys {
-  animation: none;
+  background: #95ec69;
+  color: #143d12;
 }
 
 /* 图片消息：不是文字气泡，是一张可点开的缩略图（微信里图片就是一条记录） */
@@ -2684,6 +2533,21 @@ body {
   font-size: 11.5px;
   cursor: pointer;
   font-family: inherit;
+}
+
+.wx-accept.locked {
+  background: #4a4a4a;
+  color: #9a9a9a;
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.wx-locked-hint {
+  flex-basis: 100%;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #d8c9b6;
+  opacity: 0.85;
 }
 
 .wx-contact.static {
@@ -2934,12 +2798,43 @@ body {
 
 .mo-img {
   display: block;
-  width: 100%;
-  margin-top: 9px;
-  border-radius: 9px;
-  aspect-ratio: 16 / 10;
-  object-fit: cover;
+  width: auto;
+  max-width: min(100%, 310px);
+  max-height: 260px;
+  margin-top: 8px;
+  border-radius: 3px;
+  object-fit: contain;
 }
+
+/* 微信朋友圈动态：左侧头像，右侧正文、时间、操作及轻量互动区 */
+.ph-feed { gap: 0; padding: 8px 14px 18px; }
+.mo { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 10px; padding: 13px 0; border-bottom: 1px solid rgba(255,255,255,.055); border-radius: 0; background: none; }
+.mo-ava { width: 40px; height: 40px; border-radius: 4px; font-size: 20px; }
+.mo-main { min-width: 0; }
+.mo-author { display: block; color: #8298b4; font-size: 13px; font-weight: 500; line-height: 1.35; }
+.mo-text { margin: 5px 0 0; color: #e9eef5; font-size: 13px; line-height: 1.65; white-space: pre-wrap; }
+.mo-photo-open { display: block; max-width: 100%; margin: 0; padding: 0; border: 0; background: none; text-align: left; cursor: zoom-in; }
+.mo-meta { position: relative; display: flex; min-height: 24px; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; color: rgba(233,238,245,.42); font-size: 10.5px; }
+.mo-more { min-width: 28px; height: 22px; padding: 0 5px; border: 0; border-radius: 2px; background: rgba(255,255,255,.07); color: #9fb2c8; font-family: inherit; font-size: 14px; font-weight: 700; line-height: 1; cursor: pointer; }
+.mo-actions { position: absolute; z-index: 2; right: 32px; top: 0; display: flex; height: 26px; padding: 0 7px; align-items: center; gap: 12px; border-radius: 3px; background: #30343b; box-shadow: 0 2px 8px #0005; }
+.mo-actions[hidden] { display: none; }
+.mo-actions button { border: 0; background: none; color: #d9e4f0; font: inherit; font-size: 11px; cursor: pointer; }
+.mo-cmts { margin-top: 5px; padding: 7px 8px; border-radius: 2px; background: rgba(255,255,255,.055); gap: 3px; }
+.mo-like-row { display: flex; flex-wrap: wrap; gap: 2px; color: #8fa7c2; font-size: 11.5px; line-height: 1.55; }
+.mo-like-mark { margin-right: 4px; color: #8fa7c2; }
+.mo-like-self { color: #8fa7c2; }
+.mo-like-count { color: #8fa7c2; }
+.mo-like-sep { color: #8fa7c2; }
+.mo-cmt { color: #e3e8ef; font-size: 11.5px; line-height: 1.55; }
+.mo-cmt b { margin-right: 0; color: #8fa7c2; font-weight: 500; }
+.mo-comment-form { display: flex; gap: 6px; margin-top: 5px; }
+.mo-comment-form input { flex: 1; min-width: 0; padding: 5px 7px; border: 1px solid rgba(255,255,255,.12); border-radius: 3px; outline: none; background: rgba(0,0,0,.14); color: #edf1f6; font: inherit; font-size: 11px; }
+.mo-comment-form button { border: 0; background: none; color: #8fa7c2; font: inherit; font-size: 11px; cursor: pointer; }
+.um-feed { padding: 4px 14px 18px; }
+.um-feed .mo { border-bottom-color: rgba(255,255,255,.08); }
+.wx-photo-viewer { position: fixed; z-index: 9999; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(0,0,0,.92); cursor: zoom-out; }
+.wx-photo-viewer img { max-width: 96vw; max-height: 92vh; object-fit: contain; cursor: default; }
+.wx-photo-close { position: absolute; top: max(16px, env(safe-area-inset-top)); right: 18px; width: 38px; height: 38px; border: 0; border-radius: 50%; background: #ffffff22; color: white; font-size: 28px; cursor: pointer; }
 
 /* ── 横屏 / 矮屏适配 ──────────────────── */
 @media (orientation: landscape) and (max-height: 500px) {
@@ -3524,3 +3419,395 @@ body {
   cursor: pointer;
   font-family: inherit;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   内心（neixin）：开局/剧情里她的心理活动。多条时点击切换，最后一条缓落。
+   ═══════════════════════════════════════════════════════════════════ */
+.neixin {
+  position: absolute;
+  top: 58px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: none;
+  width: min(82%, 420px);
+  padding: 14px 16px 18px;
+  background: rgba(28, 22, 18, 0.82);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  color: var(--ink);
+  font-size: 13.5px;
+  line-height: 1.65;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+  /* 本体点穿：点击交给整屏遮罩（.neixin-shade，z-index:35）处理，
+     这样全屏任意处都能翻心里话，又不会拦住下方按钮 */
+  pointer-events: none;
+}
+
+/* 内心推进遮罩：多条内心话期间整屏可点，点背景任意处即翻下一句。
+   位于内心文字(z:40)之下、通知按钮(z:60)与手机面板之上。 */
+.neixin-shade {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.neixin-shade[hidden] {
+  display: none;
+}
+
+.neixin.on {
+  display: block;
+  animation: neixin-in 0.28s ease;
+}
+
+@keyframes neixin-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.neixin.big {
+  width: min(86%, 460px);
+  padding: 20px 22px 26px;
+  font-size: 17px;
+  line-height: 1.85;
+  text-align: center;
+}
+
+.neixin.clickable {
+  cursor: pointer;
+}
+
+.neixin.clickable:active {
+  transform: translateX(-50%) scale(0.99);
+}
+
+.neixin .cnr {
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border: 1.5px solid var(--accent);
+  opacity: 0.5;
+}
+.neixin .cnr.tl { top: 5px; left: 5px; border-right: 0; border-bottom: 0; }
+.neixin .cnr.tr { top: 5px; right: 5px; border-left: 0; border-bottom: 0; }
+.neixin .cnr.bl { bottom: 5px; left: 5px; border-right: 0; border-top: 0; }
+.neixin .cnr.br { bottom: 5px; right: 5px; border-left: 0; border-top: 0; }
+
+.neixin-tag {
+  display: inline-block;
+  margin-bottom: 7px;
+  font-size: 11px;
+  letter-spacing: 3px;
+  color: var(--accent);
+  opacity: 0.9;
+}
+
+.neixin-txt {
+  display: block;
+}
+
+.neixin-more {
+  position: absolute;
+  right: 13px;
+  bottom: 9px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--accent);
+  animation: neixin-blink 1.1s ease-in-out infinite;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+@keyframes neixin-blink {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
+/* ── 动态通知按钮（可拖拽到屏幕任意位置）──────────────────────────── */
+.notif-btn {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  z-index: 60;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: rgba(30, 24, 20, 0.9);
+  color: var(--ink);
+  font-size: 17px;
+  cursor: grab;
+  display: grid;
+  place-items: center;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  touch-action: none;
+}
+.notif-btn:active { cursor: grabbing; }
+.notif-btn .dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #e2596b;
+  border: 1.5px solid var(--panel-solid);
+}
+.notif-btn .dot[hidden] { display: none; }
+
+.notif-panel {
+  position: fixed;
+  z-index: 61;
+  width: min(78%, 320px);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.notif-panel[hidden] { display: none; }
+.notif-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  color: var(--ink-dim);
+  border-bottom: 1px solid var(--line);
+}
+.notif-panel-head button {
+  border: none;
+  background: none;
+  color: var(--ink-dim);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+#notif-list {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  overflow-y: auto;
+}
+
+/* 微信「消息」tab 的未读总数红点 */
+.wx-count {
+  position: absolute;
+  top: 3px;
+  right: 16%;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #e2596b;
+  color: #fff;
+  font-size: 10px;
+  font-style: normal;
+  line-height: 16px;
+  text-align: center;
+}
+.wx-count[hidden] { display: none; }
+
+/* 好友申请条目里的"来源"小字（仿微信「来自搜索手机号添加」） */
+.wx-src {
+  display: block;
+  margin-top: 2px;
+  font-size: 10.5px;
+  color: #8a8a8a;
+}
+
+/* ── 聊天里的系统灰字（仿微信 8.0.59+ 的浅灰居中小字）──────────
+   之前完全没有规则，所以那条「……可以通过验证了」是顶着左边、贴着行的，
+   看起来又黑又肿。微信的排版是：居中、浅灰、字号更小、上下留白。 */
+.wx-sys {
+  display: block;
+  max-width: 84%;
+  margin: 12px auto 4px;
+  padding: 0 14px;
+  text-align: center;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: #9b9b9b;
+  word-break: break-word;
+}
+
+/* 「以上是打招呼的内容」这类分隔提示：更淡一点，像一条说明 */
+.wx-sys.divider {
+  margin: 6px auto 10px;
+  color: #b0b0b0;
+  font-size: 11px;
+}
+
+/* 聊天里的时间戳：仿微信，只在消息间隔较大处插一条，居中浅灰 */
+.wx-ts {
+  display: block;
+  margin: 12px auto 6px;
+  font-size: 11px;
+  color: #9b9b9b;
+  text-align: center;
+}
+
+/* ── 顶栏「⋯」（聊天信息入口，绝对定位在右，不挤居中标题）──── */
+.wx-more {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 30px;
+  border: none;
+  background: none;
+  color: #e9eef5;
+  font-size: 20px;
+  line-height: 1;
+  letter-spacing: 1px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.wx-more[hidden] { display: none; }
+
+/* ── 设置备注开关 ───────────────────────────── */
+.wx-remark-flagrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+}
+.wx-remark-lb { font-size: 13px; color: #e9eef5; }
+.wx-remark-flag { width: 18px; height: 18px; accent-color: #4f9d5c; cursor: pointer; }
+.wx-remark-namerow[hidden] { display: none; }
+
+/* ── 聊天信息页 ─────────────────────────────── */
+.wx-ci-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.wx-ci-person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font-family: inherit;
+  text-align: left;
+}
+.wx-ci-name {
+  font-size: 15px;
+  color: #e9eef5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wx-ci-add {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: #cfd6e0;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+/* ── 查找聊天记录 ───────────────────────────── */
+.wx-search { padding: 10px 12px; }
+.wx-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+}
+.wx-search-i { font-size: 12px; opacity: 0.6; }
+.wx-search-in {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  color: #e9eef5;
+  font-size: 13.5px;
+  font-family: inherit;
+  outline: none;
+}
+.wx-search-results { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.wx-sr {
+  padding: 9px 11px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.wx-sr-time { display: block; font-size: 10.5px; color: #8f97a2; margin-bottom: 3px; }
+.wx-sr-txt { font-size: 13px; color: #dfe5ec; line-height: 1.5; word-break: break-word; }
+.wx-sr-txt mark { background: rgba(232, 168, 124, 0.45); color: #fff; border-radius: 3px; padding: 0 2px; }
+
+/* ── 个人主页 / 详细资料 ────────────────────── */
+.wx-profile { padding: 16px 14px; }
+.wx-pf-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.wx-pf-sig {
+  display: flex;
+  gap: 10px;
+  padding: 12px 2px;
+  font-size: 12.5px;
+}
+.wx-pf-sig label { color: #8f97a2; flex: none; }
+.wx-pf-sig span { color: #cfd6e0; }
+.wx-pf-tip { margin-top: 14px; font-size: 11px; color: #7b828c; text-align: center; }
+
+/* ── TA 的朋友圈（封面 + 头像 + 签名 + 动态）── */
+.um-cover {
+  height: 130px;
+  background: linear-gradient(160deg, #4b3c58 0%, #2b2436 55%, #161a22 100%);
+}
+.um-id {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 0 16px;
+  margin-top: -22px;
+  position: relative;
+}
+.um-ava {
+  width: 54px;
+  height: 54px;
+  border-radius: 10px;
+  background: #1b2028;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 30px;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+}
+.um-name { font-size: 15px; color: #e9eef5; font-weight: 500; padding-bottom: 6px; }
+.um-sig { padding: 8px 16px 12px; font-size: 12px; color: #9aa2ad; }
+.um-feed { padding: 0 14px 16px; display: flex; flex-direction: column; gap: 10px; }

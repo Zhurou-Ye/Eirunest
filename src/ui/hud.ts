@@ -39,6 +39,7 @@ import type { LlmConfig } from '../ai/client';
 
 export interface UICallbacks {
   onSend(text: string): void;
+  openingInputLocked(): boolean;
   /** 玩家从开局剧本的快捷回复里选了一句 */
   onOpeningPick(label: string): void;
   onTouch(part: TouchKind): void;
@@ -64,6 +65,7 @@ export interface UICallbacks {
   onStartJob(jobId: string): void;
   /** 给朋友圈点/取消赞 */
   onLikeMoment(id: string): void;
+  onCommentMoment(id: string, text: string): void;
   /** 我发一条朋友圈 */
   onPostMoment(text: string): void;
   /** 我写一句日记 */
@@ -72,6 +74,8 @@ export interface UICallbacks {
   onSaveMyPlan(blocks: PlanBlock[]): void;
   /** 打开某个会话（用于清未读） */
   onReadThread(owner: 'her' | 'me', contactId: string): void;
+  /** 某个会话的偏好：置顶 / 消息免打扰 */
+  onChatPref(contactId: string, patch: { pinned?: boolean; muted?: boolean }): void;
   /** 把认识的人加进通讯录；remark 为玩家设的备注名 */
   onAddContact(id: string, remark?: string): void;
   /** 换头像（两部手机同步） */
@@ -106,13 +110,13 @@ export interface PresenceInfo {
 export interface UI {
   setBubble(text: string): void;
   setBubbleHint(text: string): void;
-  /** 玩家的内心独白（OS）：固定显示在顶部；big = 像标语一样大字强调一下 */
-  setNeixin(lines: string | string[], big?: boolean): void;
+  /** 玩家的内心独白（OS）：固定显示在顶部；big = 像标语一样大字强调一下。gateAccept=true 时锁住"新的朋友"的接受按钮直到内心戏播完 */
+  setNeixin(lines: string | string[], big?: boolean, gateAccept?: boolean): void;
   /** 开局剧本的快捷回复（玩家的可选台词） */
   showOpeningChoices(labels: string[]): void;
   hideOpeningChoices(): void;
-  /** 玩家的内心独白（不是她说的）；多条会依次播出 */
-  setNeixin(lines: string | string[], big?: boolean): void;
+  /** 玩家的内心独白（不是她说的）；多条会依次播出。gateAccept=true 时锁住接受按钮直到播完 */
+  setNeixin(lines: string | string[], big?: boolean, gateAccept?: boolean): void;
   /** 开局剧本的快捷回复（玩家的可选台词） */
   showOpeningChoices(labels: string[]): void;
   hideOpeningChoices(): void;
@@ -124,6 +128,8 @@ export interface UI {
   pushTurn(t: DialogueTurn): void;
   getTurns(): DialogueTurn[];
   addLog(text: string, important?: boolean): void;
+  /** 新档开局时清空通知面板（上一轮离线补记的残留记录不该带进新档） */
+  clearNotifications(): void;
   tick(save: SaveData): void;
   greet(save: SaveData): void;
   setLive2DStatus(s: { loading: boolean; ready: boolean; error?: string }): void;
@@ -244,14 +250,26 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           <div class="think" id="ui-think" hidden><span></span><span></span><span></span></div>
         </div>
 
+        <!-- 内心推进遮罩：多条内心话时整屏可点，点背景任意处即翻下一句 -->
+        <div class="neixin-shade" id="ui-neixin-shade" hidden></div>
+
         <!-- 玩家的内心独白（内心）：固定在顶部的一条，和她的话明确区分 -->
         <div class="neixin" id="ui-neixin" hidden>
           <span class="cnr tl"></span><span class="cnr tr"></span><span class="cnr bl"></span><span class="cnr br"></span>
           <span class="neixin-tag">内心</span>
           <span class="neixin-txt" id="ui-neixin-txt"></span>
+          <span class="neixin-more" id="ui-neixin-more" hidden>›</span>
         </div>
 
-        <div class="log" id="ui-log"></div>
+        <!-- 动态通知：默认折叠成一颗可拖拽的小按钮，点开才看得到 -->
+        <button class="notif-btn" id="notif-btn" aria-label="动态通知">
+          <span>🔔</span>
+          <i class="dot" id="notif-dot" hidden></i>
+        </button>
+        <div class="notif-panel" id="notif-panel" hidden>
+          <div class="notif-panel-head"><span>动态</span><button id="notif-close" aria-label="收起">×</button></div>
+          <div id="notif-list"></div>
+        </div>
 
         <button class="menu-toggle" id="btn-menu" aria-label="菜单">
           <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -457,7 +475,10 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
 
   const bubble = $<HTMLDivElement>('ui-bubble');
   const think = $<HTMLDivElement>('ui-think');
-  const logBox = $<HTMLDivElement>('ui-log');
+  const notifBtn = $<HTMLButtonElement>('notif-btn');
+  const notifPanel = $<HTMLDivElement>('notif-panel');
+  const notifList = $<HTMLDivElement>('notif-list');
+  const notifDot = $<HTMLElement>('notif-dot');
   const input = $<HTMLInputElement>('ui-input');
   const thread = $<HTMLDivElement>('ui-thread');
   const boot = $<HTMLDivElement>('boot');
@@ -468,6 +489,8 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
   let lastClockText = '';
   let open: PanelName | null = null;
   let lastSave: SaveData | null = null;
+  /** 开局内心戏还没播完时为 true → "新的朋友"接受按钮被禁用，播到最后一句才解锁 */
+  let openingNeixinPending = false;
   let lastShopKey = '';
   let lastStoryKey = '';
   let lastTraitKey = '';
@@ -568,6 +591,68 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
   };
   $('btn-menu').addEventListener('click', () => setDrawer(drawer.hidden));
   drawerMask.addEventListener('click', () => setDrawer(false));
+
+  // ── 动态通知按钮：点击展开/收起 + 可拖拽放到屏幕任意处 ──
+  const NOTIF_POS_KEY = 'hearth-boy.notif-pos.v1';
+  const setNotifPos = (x: number, y: number): void => {
+    const stage = root.querySelector<HTMLElement>('.stage');
+    const maxX = (stage?.clientWidth ?? window.innerWidth) - notifBtn.offsetWidth - 8;
+    const maxY = (stage?.clientHeight ?? window.innerHeight) - notifBtn.offsetHeight - 8;
+    const cx = Math.max(8, Math.min(x, maxX));
+    const cy = Math.max(8, Math.min(y, maxY));
+    notifBtn.style.left = `${cx}px`;
+    notifBtn.style.top = `${cy}px`;
+    notifPanel.style.left = `${Math.max(8, Math.min(cx, maxX))}px`;
+    notifPanel.style.top = `${cy + 42}px`;
+    try {
+      localStorage.setItem(NOTIF_POS_KEY, JSON.stringify({ x: cx, y: cy }));
+    } catch {
+      /* 隐私模式下存不了就算了，位置仅本会话生效 */
+    }
+  };
+  try {
+    const saved = localStorage.getItem(NOTIF_POS_KEY);
+    if (saved) {
+      const p = JSON.parse(saved) as { x: number; y: number };
+      if (typeof p.x === 'number' && typeof p.y === 'number') setNotifPos(p.x, p.y);
+    }
+  } catch {
+    /* 忽略坏数据 */
+  }
+  notifBtn.addEventListener('click', () => {
+    const opening = notifPanel.hidden;
+    notifPanel.hidden = !opening;
+    if (opening) notifDot.hidden = true; // 展开即已读
+  });
+  $('notif-close').addEventListener('click', () => {
+    notifPanel.hidden = true;
+  });
+  // 拖拽：按下后移动超过 6px 算拖动（不触发点击），松手落位
+  let dragStart: { x: number; y: number; left: number; top: number } | null = null;
+  let dragged = false;
+  notifBtn.addEventListener('pointerdown', (e) => {
+    dragStart = { x: e.clientX, y: e.clientY, left: notifBtn.offsetLeft, top: notifBtn.offsetTop };
+    dragged = false;
+    notifBtn.setPointerCapture(e.pointerId);
+  });
+  notifBtn.addEventListener('pointermove', (e) => {
+    if (!dragStart) return;
+    const dx = e.clientX - dragStart.x;
+    const dy = e.clientY - dragStart.y;
+    if (!dragged && Math.hypot(dx, dy) > 6) dragged = true;
+    if (dragged) setNotifPos(dragStart.left + dx, dragStart.top + dy);
+  });
+  notifBtn.addEventListener('pointerup', () => {
+    dragStart = null;
+    // 拖动过的这一下不当作点击（防止拖完顺手展开面板）
+    if (dragged) {
+      const suppress = (ev: Event): void => {
+        ev.stopPropagation();
+        ev.preventDefault();
+      };
+      notifBtn.addEventListener('click', suppress, { capture: true, once: true });
+    }
+  });
   root.querySelectorAll<HTMLElement>('.drawer-item').forEach((el) => {
     el.addEventListener('click', () => {
       setDrawer(false);
@@ -624,6 +709,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
   });
 
   const send = () => {
+    if (cb.openingInputLocked()) return;
     const v = input.value.trim();
     if (!v) return;
     input.value = '';
@@ -761,30 +847,62 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
 
     /**
      * 玩家的内心独白——不是她说的，是"我"心里的话。
-     * 常驻在顶部一条；传多条时依次播出（像心事一层层浮上来）。
-     * big = 关键节拍的"标语时刻"：缓慢放大 + 呼吸光，4 秒后缓落回常驻大小。
+     * 单条：大字标语式呈现，4 秒后缓落回常驻大小。
+     * 多条：**点击推进**（玩家没看清不许闪）——第一条大字停着，点一下换下一条，
+     *       最后一条点完美落回常驻。进行中内心栏可点（有 › 提示）。
      */
-    setNeixin(lines: string | string[], big = false) {
+    setNeixin(lines: string | string[], big = false, gateAccept = false) {
       const box = $<HTMLDivElement>('ui-neixin');
       const txt = $<HTMLSpanElement>('ui-neixin-txt');
+      const more = $<HTMLSpanElement>('ui-neixin-more');
+      const shade = $<HTMLDivElement>('ui-neixin-shade');
       const list = Array.isArray(lines) ? lines : [lines];
       if (!list.length) return;
       if (neixinTimer) clearTimeout(neixinTimer);
       if (bigTimer) clearTimeout(bigTimer);
-      const show = (i: number): void => {
-        txt.textContent = list[i];
+      // 多句 + 要求门控 → 锁住"新的朋友"：内心戏没点完之前，通讯录/新朋友点不动
+      openingNeixinPending = gateAccept && list.length > 1;
+      const multi = list.length > 1;
+      let idx = 0;
+      const paintLine = (): void => {
+        txt.textContent = list[idx];
         box.hidden = false;
         box.classList.add('on');
-        box.classList.toggle('big', big && i === 0);
-        if (big && i === 0) {
-          bigTimer = window.setTimeout(() => box.classList.remove('big'), 4000);
-        }
-        // 还有下一条心里话 → 隔一会儿换上（読む速度感）
-        if (i + 1 < list.length) {
-          neixinTimer = window.setTimeout(() => show(i + 1), 2600);
-        }
+        box.classList.toggle('big', big);
+        // 多句内心：整屏背景可点翻页（点任意处 = 下一句），右下角 › 仍可用
+        const showMore = multi;
+        more.hidden = !showMore;
+        box.classList.toggle('clickable', showMore);
+        if (shade) shade.hidden = !showMore;
       };
-      show(0);
+      const advance = (): void => {
+        if (idx + 1 >= list.length) {
+          // 播到最后一句并点掉 → 收起内心框、解锁"新的朋友"
+          box.classList.remove('on', 'big', 'clickable');
+          more.hidden = true;
+          box.hidden = true;
+          if (shade) shade.hidden = true;
+          if (gateAccept) {
+            openingNeixinPending = false;
+            // 手机开局已在下方显示；内心戏播完后重绘一次"我的手机"——
+            // 通讯录标签与"新的朋友"里的接受按钮会随门控解除自动解锁。
+            phones.me.forceRepaint();
+          }
+          return;
+        }
+        idx += 1;
+        paintLine();
+      };
+      // 本体 pointer-events:none（CSS），点击交给整屏 shade 处理——
+      // 这样大字内心框即使盖在手机面板上，也不会拦住任何按钮，且全屏都可点。
+      box.onclick = null;
+      more.onclick = multi ? advance : null;
+      if (shade) shade.onclick = multi ? advance : null;
+      paintLine();
+      // 单条内心：大字停 4 秒就缓落（不挡后面看东西）；多条等玩家点
+      if (list.length === 1 && big) {
+        bigTimer = window.setTimeout(() => box.classList.remove('big'), 4000);
+      }
     },
 
     /** 开局剧本的快捷回复：显示在聊天输入栏上方（我手机的微信里） */
@@ -840,12 +958,15 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       const el = document.createElement('div');
       el.className = important ? 'log-item key' : 'log-item';
       el.textContent = text;
-      logBox.prepend(el);
-      while (logBox.children.length > 4) logBox.lastElementChild?.remove();
-      window.setTimeout(() => {
-        el.classList.add('fade');
-        window.setTimeout(() => el.remove(), 900);
-      }, 7000);
+      notifList.prepend(el);
+      while (notifList.children.length > 8) notifList.lastElementChild?.remove();
+      // 折叠状态下有新动态 → 按钮冒小红点；面板展开着就当已经看到了
+      notifDot.hidden = !notifPanel.hidden;
+    },
+
+    clearNotifications() {
+      notifList.replaceChildren();
+      notifDot.hidden = true;
     },
 
     showStoryMonologue(text: string, title = '……') {
@@ -955,6 +1076,10 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
         const val = `${hh}:${mm}`;
         if (timeInputEl.value !== val) timeInputEl.value = val;
       }
+      const openingLocked = cb.openingInputLocked();
+      input.disabled = openingLocked;
+      $('btn-send').toggleAttribute('disabled', openingLocked);
+      input.placeholder = openingLocked ? '请先选择剧情回复…' : '跟 TA 说点什么…';
       // 手机（只看打开着的那台，避免每帧重建 DOM）
       if (open === 'phone') phones.her.refresh(save);
       else if (open === 'myphone') phones.me.refresh(save);
@@ -1162,13 +1287,6 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
   }
 
   // ── 手机：主屏 APP + 微信 ────────────────
-  const MOMENT_KIND: Record<string, string> = {
-    outing: '出门了',
-    diary: '日记',
-    gift: '收到了礼物',
-    event: '日常',
-    mine: '我拍的',
-  };
 
   /** 每个地点的"照片"配色（没有生成图时退化成配色卡片） */
   const PLACE_ART: Record<string, [string, string, string]> = {
@@ -1236,11 +1354,18 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     | 'onlychat'
     | 'avatar'
     | 'status'
-    | 'remark';
+    | 'remark'
+    // 聊天信息 / 查找聊天记录 / 个人主页 / （好友的）朋友圈
+    | 'chatinfo'
+    | 'chatsearch'
+    | 'profile'
+    | 'userMoments';
 
   interface PhoneCtl {
     onShow(): void;
     refresh(save: SaveData): void;
+    /** 无视签名缓存，强制按当前存档重绘一次（用于门控解锁等即时状态变化） */
+    forceRepaint(): void;
     notifyHerMsg(): void;
     openChat(contactId: string): void;
     openContacts(): void;
@@ -1276,6 +1401,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
             <div class="wx-appbar" hidden>
               <button class="wx-back" aria-label="返回">‹</button>
               <span class="wx-title"></span>
+              <button class="wx-more" aria-label="聊天信息" hidden>⋯</button>
             </div>
             <div class="wx-scroll"></div>
             <div class="wx-quick" hidden></div>
@@ -1285,8 +1411,8 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
             </div>
           </div>
           <nav class="wx-tabs">
-            <button data-tab="chats" class="on"><span>💬</span><em>消息</em><i class="wx-dot" hidden></i></button>
-            <button data-tab="contacts"><span>👥</span><em>通讯录</em></button>
+            <button data-tab="chats" class="on"><span>💬</span><em>消息</em><i class="wx-count" id="wx-count" hidden></i></button>
+            <button data-tab="contacts"><span>👥</span><em>通讯录</em><i class="wx-count" id="wx-count-contacts" hidden></i></button>
             <button data-tab="discover"><span>🧭</span><em>发现</em></button>
             <button data-tab="me"><span>🙂</span><em>我</em></button>
           </nav>
@@ -1296,6 +1422,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     const clockEl = panel.querySelector<HTMLElement>('.ph-clock')!;
     const appbar = panel.querySelector<HTMLElement>('.wx-appbar')!;
     const titleEl = panel.querySelector<HTMLElement>('.wx-title')!;
+    const moreBtn = panel.querySelector<HTMLElement>('.wx-more')!;
     const scroll = panel.querySelector<HTMLElement>('.wx-scroll')!;
     const foot = panel.querySelector<HTMLElement>('.wx-foot')!;
     const quick = panel.querySelector<HTMLElement>('.wx-quick')!;
@@ -1303,7 +1430,11 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     let quickOptions: string[] = [];
     const input = panel.querySelector<HTMLInputElement>('.wx-input')!;
     const tabs = panel.querySelector<HTMLElement>('.wx-tabs')!;
-    const dot = panel.querySelector<HTMLElement>('.wx-dot')!;
+    const unreadCount = panel.querySelector<HTMLElement>('#wx-count')!;
+    // 通讯录角标必须在本面板内查询：her/me 两台手机共用同一模板、id 完全相同，
+    // 用 document.getElementById 会永远命中 DOM 里靠前的那台（隐藏的 her 面板），
+    // 导致可见的「我的手机」通讯录角标永远不更新。
+    const contactsBadgeEl = panel.querySelector<HTMLElement>('#wx-count-contacts')!;
     // 关闭按钮必须在面板内容建好之后再绑——之前它在空面板上绑，所以点了没用
     panel.querySelector<HTMLElement>('.phone-x')!.addEventListener('click', () => ui.openPanel(null));
 
@@ -1313,10 +1444,15 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     let lastWx: WxPage = 'chats';
     let chatId: string | null = null;
     let remarkId: string | null = null;
+    let commentingMomentId: string | null = null;
     let unreadReal = 0;
     let lastSig = '';
     /** 已经播过逐字入场动画的那条消息 id（重绘不重放） */
     let lastAnimatedId = '';
+    /** 「个人主页 / TA 的朋友圈」当前看的是谁（联系人 id） */
+    let viewProfileId: string | null = null;
+    /** 「查找聊天记录」的搜索词（本地维护，不进签名——否则输入框会因重绘失焦） */
+    let searchQuery = '';
 
     const WX_TABS: WxPage[] = ['chats', 'contacts', 'discover', 'me'];
 
@@ -1330,6 +1466,13 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       if (!openingAccepted) return [];
 
       const base = owner === 'me' ? myContacts(save.character.personality.name) : herContacts(save.playerName);
+      // 玩家通过好友时设的备注存在 'her-opening' 那条上，要反映到实际的 'her' 联系人——
+      // 否则聊天列表/顶栏还是显示原名，备注像没生效。
+      if (owner === 'me') {
+        const op = save.metPeople.find((p) => p.id === 'her-opening');
+        const herc = base.find((c) => c.id === 'her');
+        if (herc && op?.remark) herc.name = op.remark;
+      }
       const met = save.metPeople
         // 'her-opening' 只是开局的"好友申请"道具，不是真联系人：
         // 玩家这边她本来就是 'her'，她那边不该出现"她自己"，两边都要排掉。
@@ -1385,8 +1528,20 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       return threadFor(save, owner, contactId)?.unread ?? 0;
     }
 
+    /** 某个会话的偏好（置顶 / 免打扰），没有就当空 */
+    function prefOf(save: SaveData, id: string): { pinned?: boolean; muted?: boolean } {
+      return save.chatPrefs?.[id] ?? {};
+    }
+    function isPinned(save: SaveData, id: string): boolean {
+      return !!prefOf(save, id).pinned;
+    }
+    function isMuted(save: SaveData, id: string): boolean {
+      return !!prefOf(save, id).muted;
+    }
+
     function totalUnread(save: SaveData): number {
-      return contactsOf(save).reduce((n, c) => n + unreadOf(save, c.id), 0);
+      // 免打扰的会话不计进底栏「消息」红点总数
+      return contactsOf(save).reduce((n, c) => n + (isMuted(save, c.id) ? 0 : unreadOf(save, c.id)), 0);
     }
 
     // ── 主屏 ──────────────────────────────
@@ -1472,19 +1627,24 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           <p>先到「通讯录」看一眼新的朋友，<br/>通过好友申请之后就可以聊天了。</p>
         </div>`;
       }
-      return `<div class="wx-list">${cs
+      // 置顶的排在最上面（稳定排序：同组内保持原有顺序）
+      const ordered = [...cs].sort((a, b) => Number(isPinned(save, b.id)) - Number(isPinned(save, a.id)));
+      return `<div class="wx-list">${ordered
         .map((c) => {
           const m = threadOf(save, c.id).msgs.slice(-1)[0] ?? null;
-          const un = unreadOf(save, c.id);
+          const muted = isMuted(save, c.id);
+          // 免打扰的会话不亮未读角标（底栏总数也随之不计）
+          const un = muted ? 0 : unreadOf(save, c.id);
           const preview = m ? escapeHtml(m.text) : '<span class="wx-mute">还没有聊天记录</span>';
           const st = c.id === (owner === 'me' ? 'her' : 'me') ? myStatusOf(save) : null;
-          return `<button class="wx-chat" data-chat="${c.id}">
+          return `<button class="wx-chat ${isPinned(save, c.id) ? 'pinned' : ''}" data-chat="${c.id}">
             <span class="wx-ava">${avatarOf(save, c.id)}</span>
             <span class="wx-cbody">
               <span class="wx-cname">${escapeHtml(c.name)}${st ? `<i class="wx-st">${st.emoji}${escapeHtml(st.word)}</i>` : ''}</span>
               <span class="wx-prev">${preview}</span>
             </span>
             <span class="wx-cmeta">
+              ${muted ? '<i class="wx-mute-i" aria-label="消息免打扰">🔕</i>' : ''}
               <span class="wx-time">${m ? hm(m.at) : ''}</span>
               ${un ? `<i class="wx-badge">${un > 99 ? '99+' : un}</i>` : ''}
             </span>
@@ -1540,13 +1700,15 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
             .map(
               (p) => {
                 const isOpening = p.id === 'her-opening';
+                const locked = openingNeixinPending;
                 return `<div class="wx-pending ${isOpening ? 'opening' : ''}">
                   <span class="wx-ava">${p.emoji}</span>
                   <span class="wx-cbody">
                     <span class="wx-cname">${escapeHtml(p.name)}</span>
                     <span class="wx-prev">${escapeHtml(p.note)}</span>
+                    <span class="wx-src">来自搜索手机号添加</span>
                   </span>
-                  <button class="wx-accept" data-accept="${p.id}">${isOpening ? '接受' : '添加'}</button>
+                  <button class="wx-accept ${locked ? 'locked' : ''}" data-accept="${p.id}" ${locked ? 'disabled' : ''}>${isOpening ? '接受' : '添加'}</button>
                 </div>`;
               },
             )
@@ -1585,9 +1747,11 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
               <span class="wx-prev">${isOpening ? '新的朋友' : '新认识的人'}</span>
             </div>
           </div>
+          <!-- 备注：直接一个框，默认填着 TA 当前的名字（想改就改，不改直接完成）。
+               放在"分组"上面，跟真微信的「设置备注和标签」一致。 -->
           <div class="wx-remark-row">
             <label>备注名</label>
-            <input class="wx-remark-in" type="text" value="${escapeHtml(name)}" maxlength="12" placeholder="给TA一个备注" />
+            <input class="wx-remark-in" type="text" value="${escapeHtml(name)}" maxlength="12" placeholder="给 TA 一个备注" />
           </div>
           <div class="wx-remark-row">
             <label>分组</label>
@@ -1599,6 +1763,120 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           </div>
           <button class="wx-remark-done" data-remark-done="${id}">完成</button>
         </div>`;
+    }
+
+    /** 微信默认个性签名（文案还没定，先占位） */
+    const DEFAULT_SIGNATURE = '这个人很懒，什么都没有留下。';
+    function signatureOf(id: string): string {
+      if (id === 'her') return '慢吞吞地走，总会遇到好天气吧 (｡·ω·｡)';
+      return DEFAULT_SIGNATURE;
+    }
+    /** 某个联系人对应的朋友圈作者；返回 null = TA 在这套数据里不产动态 */
+    function authorKeyOf(contactId: string): 'her' | 'me' | null {
+      if (contactId === 'her') return 'her';
+      if (contactId === 'me') return 'me';
+      return null;
+    }
+
+    /** 「聊天信息」：头像+名字（点开个人主页）、＋（以后拉群）、查找聊天记录 */
+    function chatInfoBody(save: SaveData, id: string): string {
+      const c = contactOf(save, id);
+      const avatar = avatarOf(save, id);
+      const pinned = isPinned(save, id);
+      const muted = isMuted(save, id);
+      const toggle = (key: 'pinned' | 'muted', label: string, on: boolean, hint: string): string =>
+        `<label class="wx-row wx-toggle-row">
+            <span class="wx-row-t">${label}<i class="wx-row-sub">${hint}</i></span>
+            <input type="checkbox" class="wx-pref-toggle" data-pref="${key}" data-pref-id="${id}" ${on ? 'checked' : ''} />
+          </label>`;
+      return `<div class="wx-list">
+          <div class="wx-ci-head">
+            <button class="wx-ci-person" data-profile="${id}">
+              <span class="wx-ava big">${avatar}</span>
+              <span class="wx-ci-name">${escapeHtml(c?.name ?? '')}</span>
+            </button>
+            <button class="wx-ci-add" data-addgroup="${id}" aria-label="添加成员">＋</button>
+          </div>
+          <button class="wx-row" data-chatsearch="${id}">
+            <span class="wx-row-i">🔍</span><span class="wx-row-t">查找聊天记录</span><i class="wx-arrow">›</i>
+          </button>
+          ${toggle('pinned', '置顶聊天', pinned, '排到消息列表最上面')}
+          ${toggle('muted', '消息免打扰', muted, '不再弹红点提醒')}
+        </div>`;
+    }
+
+    /** 「查找聊天记录」：关键词搜这个会话里的消息 */
+    function chatSearchBody(save: SaveData, id: string, query: string): string {
+      const { msgs } = threadOf(save, id);
+      const q = query.trim();
+      const hits = q ? msgs.filter((m) => m.from !== 'sys' && m.text.includes(q)) : [];
+      const body = q
+        ? hits.length
+          ? hits
+              .map(
+                (m) => `<div class="wx-sr">
+                  <span class="wx-sr-time">${hm(m.at)}</span>
+                  <span class="wx-sr-txt">${highlight(m.text, q)}</span>
+                </div>`,
+              )
+              .join('')
+          : '<p class="ph-empty">没有找到相关聊天记录。</p>'
+        : '<p class="ph-empty">输入关键词，搜索你们之间的聊天记录。</p>';
+      return `<div class="wx-search">
+          <div class="wx-search-bar">
+            <span class="wx-search-i">🔍</span>
+            <input class="wx-search-in" type="text" placeholder="搜索聊天记录" value="${escapeHtml(query)}" autocomplete="off" />
+          </div>
+          <div class="wx-search-results">${body}</div>
+        </div>`;
+    }
+
+    function escapeReg(s: string): string {
+      return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+    /** 先转义再高亮，避免 XSS 与错位 */
+    function highlight(text: string, q: string): string {
+      if (!q) return escapeHtml(text);
+      return escapeHtml(text).replace(new RegExp(escapeReg(escapeHtml(q)), 'gi'), (s) => `<mark>${s}</mark>`);
+    }
+
+    /** 「个人主页 / 详细资料」：头像、名字、微信号、签名、朋友圈入口 */
+    function profileBody(save: SaveData, id: string): string {
+      const c = contactOf(save, id);
+      const avatar = avatarOf(save, id);
+      const wxid = id === 'her' ? 'she_hearth' : id === 'me' ? 'me_hearth' : `wxid_${id}`;
+      return `<div class="wx-profile">
+          <div class="wx-pf-head">
+            <span class="wx-ava big">${avatar}</span>
+            <div class="wx-cbody">
+              <span class="wx-cname">${escapeHtml(c?.name ?? '')}</span>
+              <span class="wx-prev">微信号：${wxid}</span>
+            </div>
+          </div>
+          <div class="wx-pf-sig"><label>个性签名</label><span>${escapeHtml(signatureOf(id))}</span></div>
+          <button class="wx-row" data-usermoments="${id}">
+            <span class="wx-row-i">🌈</span><span class="wx-row-t">朋友圈</span><i class="wx-arrow">›</i>
+          </button>
+          <div class="wx-pf-tip">以后这里还会放更多资料（照片、共同的回忆…）</div>
+        </div>`;
+    }
+
+    /** 「TA 的朋友圈」：背景 + 头像 + 签名 + TA 发过的动态 */
+    function userMomentsBody(save: SaveData, id: string): string {
+      const c = contactOf(save, id);
+      const avatar = avatarOf(save, id);
+      const key = authorKeyOf(id);
+      const posts = key ? [...momentsFor(save)].filter((m) => m.author === key).reverse().slice(0, 30) : [];
+      const feed = posts.length
+        ? posts.map((m) => renderMomentCard(save, m, c?.name ?? '', avatar)).join('')
+        : '<p class="ph-empty">TA 还没有发过动态。</p>';
+      return `<div class="um-cover"></div>
+        <div class="um-id">
+          <span class="um-ava">${avatar}</span>
+          <span class="um-name">${escapeHtml(c?.name ?? '')}</span>
+        </div>
+        <div class="um-sig">${escapeHtml(signatureOf(id))}</div>
+        <div class="um-feed">${feed}</div>`;
     }
 
     function discoverBody(): string {
@@ -1665,40 +1943,117 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           (herPending ? '' : `<p class="ph-empty">${owner === 'me' ? '还没有聊过，说点什么吧。' : '还没有聊天记录。'}</p>`)
         );
       }
-      return (
-        head +
-        stLine +
-        msgs
-          .map((m) => {
-            // 系统提示（如"我通过了你的朋友验证请求…"）：微信里那种居中灰字，不是谁说的话
-            if (m.from === 'sys') {
-              return `<div class="wx-sys">${escapeHtml(m.text)}</div>`;
-            }
-            const mine = isMineMsg(m, tOwner);
-            const ava = mine
-              ? ''
-              : `<span class="wx-mini">${avatarOf(save, m.from === 'owner' ? (owner === 'me' ? 'me' : 'her') : m.from)}</span>`;
-            // 动漫对话节奏：她的最新一条，气泡轻轻落定 + 文字逐字浮出。
-            // 只对"第一次见到"的那条做（记 id），重绘不重放；太长/图片不逐字。
-            const isLast = m === msgs[msgs.length - 1];
-            const fresh = !mine && isLast && !m.image && m.id !== lastAnimatedId && m.text.length <= 60;
-            if (fresh) lastAnimatedId = m.id;
-            // 图片消息：跟真人微信一样是一张缩略图，点开可放大；它不是气泡文字
-            const body = m.image
-              ? `<span class="wx-bub wx-bub-img">
-                  <img class="wx-img" src="${escapeHtml(m.image)}" alt="图片" data-zoom="${escapeHtml(m.image)}" />
-                  ${m.text ? `<em class="wx-img-cap">${escapeHtml(m.text)}</em>` : ''}
-                </span>`
-              : `<span class="wx-bub">${fresh ? staggerChars(m.text) : escapeHtml(m.text)}</span>`;
-            return `<div class="wx-line ${mine ? 'mine' : ''}${fresh ? ' fresh' : ''}">${ava}${body}</div>`;
-          })
-          .join('') +
-        typing
-      );
+      const rows: string[] = [];
+      let prevIso: string | null = null;
+      for (const m of msgs) {
+        // 时间戳：仿微信 —— 首条、或与上一条间隔够大时才插一条居中时间（不是每条都显示）
+        const stamp = wxStamp(m.iso, prevIso);
+        if (stamp) rows.push(`<div class="wx-ts">${stamp}</div>`);
+        prevIso = m.iso;
+        // 系统提示（如"你已添加了…"/"以上是打招呼的内容"）：微信里那种居中灰字，不是谁说的话
+        if (m.from === 'sys') {
+          const divider = /打招呼/.test(m.text) ? ' divider' : '';
+          rows.push(`<div class="wx-sys${divider}">${escapeHtml(m.text)}</div>`);
+          continue;
+        }
+        const mine = isMineMsg(m, tOwner);
+        const ava = mine
+          ? ''
+          : `<span class="wx-mini">${avatarOf(save, m.from === 'owner' ? (owner === 'me' ? 'me' : 'her') : m.from)}</span>`;
+        // 动漫对话节奏：她的最新一条，气泡轻轻落定 + 文字逐字浮出。
+        // 只对"第一次见到"的那条做（记 id），重绘不重放；太长/图片不逐字。
+        const isLast = m === msgs[msgs.length - 1];
+        const fresh = !mine && isLast && !m.image && m.id !== lastAnimatedId && m.text.length <= 60;
+        if (fresh) lastAnimatedId = m.id;
+        // 图片消息：跟真人微信一样是一张缩略图，点开可放大；它不是气泡文字
+        const body = m.image
+          ? `<span class="wx-bub wx-bub-img">
+              <img class="wx-img" src="${escapeHtml(m.image)}" alt="图片" data-zoom="${escapeHtml(m.image)}" />
+              ${m.text ? `<em class="wx-img-cap">${escapeHtml(m.text)}</em>` : ''}
+            </span>`
+          : `<span class="wx-bub">${fresh ? staggerChars(m.text) : escapeHtml(m.text)}</span>`;
+        rows.push(`<div class="wx-line ${mine ? 'mine' : ''}${fresh ? ' fresh' : ''}">${ava}${body}</div>`);
+      }
+      return head + stLine + rows.join('') + typing;
+    }
+
+    /**
+     * 微信式时间戳：只在"首条"或"与上一条间隔 ≥5 分钟"时返回文字，否则返回空串。
+     * 按**现实时间**（消息的 iso），跟真人微信一样 —— 不是每条都显示时间。
+     */
+    function wxStamp(iso: string, prevIso: string | null): string {
+      const t = new Date(iso).getTime();
+      if (!Number.isFinite(t)) return '';
+      if (prevIso) {
+        const p = new Date(prevIso).getTime();
+        if (Number.isFinite(p) && t - p < 5 * 60_000) return '';
+      }
+      const d = new Date(t);
+      const now = new Date();
+      const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+      if (d.toDateString() === now.toDateString()) return hhmm;
+      const yst = new Date(now.getTime() - 86_400_000);
+      if (d.toDateString() === yst.toDateString()) return `昨天 ${hhmm}`;
+      if (d.getFullYear() === now.getFullYear()) return `${d.getMonth() + 1}月${d.getDate()}日 ${hhmm}`;
+      return `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日 ${hhmm}`;
+    }
+
+    /**
+     * 朋友圈的时间：换算成**具体日期**（微信里旧动态就是这么显示的）。
+     * 她的历史动态 iso = 「注册时间 - daysAgo」，所以这里得到的就是真实日期，
+     * 例如今天 2026-10-16 就会显示 10月15日 / 7月5日 / 5月18日 ……
+     * 跨年的带上年份。
+     */
+    function momentStamp(iso: string): string {
+      const t = new Date(iso).getTime();
+      if (!Number.isFinite(t)) return '';
+      const d = new Date(t);
+      const now = new Date();
+      const md = `${d.getMonth() + 1}月${d.getDate()}日`;
+      const date = d.getFullYear() === now.getFullYear() ? md : `${d.getFullYear()}年${md}`;
+      return `${date} ${hm(d.getHours() + d.getMinutes() / 60)}`;
+    }
+
+    function renderMomentCard(save: SaveData, m: SaveData['moments'][number], author: string, avatar: string): string {
+      const where = m.placeId ? getPlace(m.placeId).name : '';
+      const visibleCmts = m.comments.filter((cm) => cm.by === 'me' || cm.by === 'her' || !!cm.isMutual);
+      const comments = visibleCmts
+        .map((cm) => `<div class="mo-cmt"><b>${escapeHtml(cm.name)}</b><span>：${escapeHtml(cm.text)}</span></div>`)
+        .join('');
+      const img = m.img || (m.placeId ? ALBUM_IMG[m.placeId] : '');
+      const photo = img
+        ? `<button class="mo-photo-open" data-photo-view="${escapeHtml(img)}" data-photo-alt="${escapeHtml(m.caption ?? '')}" aria-label="查看大图"><img class="mo-img" src="${escapeHtml(img)}" alt="${escapeHtml(m.caption ?? '')}" loading="lazy" /></button>`
+        : '';
+      const canInteract = owner === 'me';
+      const canLike = canInteract && m.author !== 'me';
+      const visibleLikers = [...new Set([
+        ...(m.visibleLikeNames ?? []),
+        ...(m.likedByMe && m.author !== 'me' ? [save.playerName] : []),
+      ])];
+      const likeRow = visibleLikers.length
+        ? `<div class="mo-like-row"><span class="mo-like-mark">♥</span><span>${visibleLikers.map((name) => escapeHtml(name)).join('、')}</span></div>`
+        : '';
+      const composer = commentingMomentId === m.id
+        ? `<form class="mo-comment-form" data-comment-form="${m.id}"><input name="comment" maxlength="200" placeholder="评论…" autocomplete="off" /><button type="submit">发送</button></form>`
+        : '';
+      const feedback = likeRow || comments || composer ? `<div class="mo-cmts">${likeRow}${comments}${composer}</div>` : '';
+      const actions = canInteract
+        ? `<div class="mo-actions" hidden>${canLike ? `<button type="button" data-like="${m.id}">${m.likedByMe ? '取消' : '赞'}</button>` : ''}<button type="button" data-comment-open="${m.id}">评论</button></div>`
+        : '';
+      return `<article class="mo"><span class="mo-ava">${avatar}</span><div class="mo-main">
+        <b class="mo-author">${escapeHtml(author)}</b><p class="mo-text">${escapeHtml(m.text)}</p>${photo}
+        <div class="mo-meta"><span>${momentStamp(m.iso)}${where ? ` · ${escapeHtml(where)}` : ''}</span>${canInteract ? `<button class="mo-more" data-moment-menu="${m.id}" aria-label="朋友圈操作">···</button>${actions}` : ''}</div>
+        ${feedback}
+      </div></article>`;
     }
 
     function momentsBody(save: SaveData): string {
-      const list = [...momentsFor(save)].reverse().slice(0, 30);
+      // 还没把"她"加进通讯录之前，她的动态不该出现在我的信息流里
+      const herAdded = contactsOf(save).some((c) => c.id === 'her');
+      const list = [...momentsFor(save)]
+        .filter((m) => m.author !== 'her' || herAdded)
+        .reverse()
+        .slice(0, 30);
       const post =
         owner === 'me'
           ? `<div class="wx-post">
@@ -1707,36 +2062,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
              </div>`
           : '';
       const feed = list
-        .map((m) => {
-          const mine = m.author === 'me';
-          const author = mine ? save.playerName : save.character.personality.name;
-          const avatar = mine ? save.myAvatar : m.placeId ? getPlace(m.placeId).emoji : save.herAvatar;
-          const where = m.placeId ? getPlace(m.placeId).name : '';
-          // 共同好友评论可见：我的评论她能看见，她的评论我能看见；NPC 评论只有共同好友时双方都可见
-          const visibleCmts = m.comments.filter((cm) => {
-            if (cm.by === 'me' || cm.by === 'her') return true;
-            // NPC：评论者与发朋友圈的人是否共同好友
-            return !!cm.isMutual;
-          });
-          const comments = visibleCmts
-            .map((cm) => `<div class="mo-cmt"><b>${escapeHtml(cm.name)}</b>${escapeHtml(cm.text)}</div>`)
-            .join('');
-          const img = m.placeId ? ALBUM_IMG[m.placeId] : '';
-          const photo = img ? `<img class="mo-img" src="${img}" alt="" />` : '';
-          return `<article class="mo">
-            <div class="mo-head">
-              <span class="mo-ava">${avatar}</span>
-              <div class="mo-who"><b>${escapeHtml(author)}</b><span>${hm(m.at)}${where ? ` · ${where}` : ''}</span></div>
-            </div>
-            <p class="mo-text">${escapeHtml(m.text)}</p>
-            ${photo}
-            <div class="mo-foot">
-              <button class="mo-like ${m.likedByMe ? 'on' : ''}" data-like="${m.id}">♥ ${m.likes}</button>
-              <span class="mo-kind">${MOMENT_KIND[m.kind] ?? ''}</span>
-            </div>
-            ${comments ? `<div class="mo-cmts">${comments}</div>` : ''}
-          </article>`;
-        })
+        .map((m) => renderMomentCard(save, m, m.author === 'me' ? save.playerName : save.character.personality.name, m.author === 'me' ? save.myAvatar : save.herAvatar))
         .join('');
       return post + (feed || '<p class="ph-empty">还没有动态。</p>');
     }
@@ -1868,6 +2194,10 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       avatar: '换头像',
       status: '发个状态',
       remark: '设置备注和标签',
+      chatinfo: '聊天信息',
+      chatsearch: '查找聊天记录',
+      profile: '详细资料',
+      userMoments: '朋友圈',
     };
 
     function bodyFor(save: SaveData): string {
@@ -1903,13 +2233,21 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           return statusPickerBody();
         case 'remark':
           return remarkId ? remarkBody(save, remarkId) : '';
+        case 'chatinfo':
+          return chatId ? chatInfoBody(save, chatId) : '';
+        case 'chatsearch':
+          return chatId ? chatSearchBody(save, chatId, searchQuery) : '';
+        case 'profile':
+          return viewProfileId ? profileBody(save, viewProfileId) : '';
+        case 'userMoments':
+          return viewProfileId ? userMomentsBody(save, viewProfileId) : '';
         default:
           return '';
       }
     }
 
     function sigFor(save: SaveData): string {
-      const base = `${page}|${wx}|${chatId ?? ''}|${save.profileId}|${save.myAvatar}|${save.herAvatar}|`;
+      const base = `${page}|${wx}|${chatId ?? ''}|${viewProfileId ?? ''}|${save.profileId}|${save.myAvatar}|${save.herAvatar}|${JSON.stringify(save.chatPrefs ?? {})}|`;
       const st = myStatusOf(save);
       switch (page) {
         case 'home':
@@ -1933,6 +2271,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
             case 'moments':
               return (
                 base +
+                `${commentingMomentId ?? ''}|` +
                 momentsFor(save)
                   .map((m) => `${m.id}:${m.likes}:${m.likedByMe ? 1 : 0}:${m.comments.length}`)
                   .join(',')
@@ -1948,6 +2287,24 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
               return base + save.metPeople.filter((p) => !p.added).map((p) => `${p.id}:${p.note}`).join(',') + `|${st?.word ?? ''}`;
             case 'remark':
               return base + `${remarkId ?? ''}|${save.metPeople.find((p) => p.id === remarkId)?.added ? 1 : 0}`;
+            case 'chatinfo':
+              return base + `${chatId ?? ''}`;
+            case 'chatsearch':
+              // 搜索词是本地维护的：不放进签名，否则每敲一个字就整页重绘、输入框失焦
+              return base + `${chatId ?? ''}`;
+            case 'profile':
+              return base + `${viewProfileId ?? ''}`;
+            case 'userMoments':
+              return (
+                base +
+                (viewProfileId ?? '') +
+                `|${commentingMomentId ?? ''}|` +
+                '|' +
+                momentsFor(save)
+                  .filter((m) => authorKeyOf(viewProfileId ?? '') === m.author)
+                  .map((m) => `${m.id}:${m.likes}:${m.likedByMe ? 1 : 0}:${m.comments.length}`)
+                  .join(',')
+              );
             default:
               return base + `${save.playerName}|${save.character.personality.name}|${st?.word ?? ''}`;
           }
@@ -2032,20 +2389,134 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           scroll.querySelectorAll<HTMLElement>('[data-group]').forEach((x) => x.classList.toggle('on', x === b));
         }),
       );
-      // 完成备注 → 真正加好友
+      // 完成备注 → 真正加好友（框里默认就是 TA 的名字，不改直接完成即可）
       scroll.querySelectorAll<HTMLElement>('[data-remark-done]').forEach((b) =>
         b.addEventListener('click', () => {
           const id = b.dataset.remarkDone as string;
-          const remark = scroll.querySelector<HTMLInputElement>('.wx-remark-in')?.value.trim();
+          const typed = scroll.querySelector<HTMLInputElement>('.wx-remark-in')?.value.trim() ?? '';
+          const remark = typed || undefined;
           cb.onAddContact(id, remark);
           remarkId = null;
-          wx = 'contacts';
+          // 'her-opening' 只是开局的"好友申请"道具：真正跟她聊天要用角色 id 'her'。
+          // 否则会打开一个空会话——系统提示和她的招呼都发在 'her' 线程里（见 onAddContact）。
+          const chatTarget = id === 'her-opening' ? 'her' : id;
+          // 真微信的节奏：加完好友直接落进和这个人的聊天页
+          chatId = chatTarget;
+          page = 'wechat';
+          wx = 'chat';
+          if (owner === 'me' && chatTarget === 'her') unreadReal = 0;
+          cb.onReadThread(owner, chatTarget);
           lastSig = '';
           if (lastSave) paint(lastSave);
+          scroll.scrollTop = scroll.scrollHeight;
         }),
       );
       scroll.querySelectorAll<HTMLElement>('[data-like]').forEach((b) =>
         b.addEventListener('click', () => cb.onLikeMoment(b.dataset.like as string)),
+      );
+      scroll.querySelectorAll<HTMLButtonElement>('[data-moment-menu]').forEach((b) =>
+        b.addEventListener('click', () => {
+          const actions = b.parentElement?.querySelector<HTMLElement>('.mo-actions');
+          if (actions) actions.hidden = !actions.hidden;
+        }),
+      );
+      scroll.querySelectorAll<HTMLButtonElement>('[data-comment-open]').forEach((b) =>
+        b.addEventListener('click', () => {
+          commentingMomentId = b.dataset.commentOpen ?? null;
+          lastSig = '';
+          if (lastSave) paint(lastSave);
+          scroll.querySelector<HTMLInputElement>('.mo-comment-form input[name="comment"]')?.focus();
+        }),
+      );
+      scroll.querySelectorAll<HTMLFormElement>('[data-comment-form]').forEach((form) =>
+        form.addEventListener('submit', (event) => {
+          event.preventDefault();
+          const id = form.dataset.commentForm ?? '';
+          const input = form.querySelector<HTMLInputElement>('input[name="comment"]');
+          const text = input?.value.trim() ?? '';
+          if (!id || !text) return;
+          cb.onCommentMoment(id, text);
+          commentingMomentId = null;
+          lastSig = '';
+          if (lastSave) paint(lastSave);
+        }),
+      );
+      scroll.querySelectorAll<HTMLButtonElement>('[data-photo-view]').forEach((b) =>
+        b.addEventListener('click', () => {
+          const src = b.dataset.photoView;
+          if (!src) return;
+          document.querySelector('.wx-photo-viewer')?.remove();
+          const viewer = document.createElement('div');
+          viewer.className = 'wx-photo-viewer';
+          viewer.innerHTML = `<button type="button" class="wx-photo-close" aria-label="关闭">×</button><img src="${escapeHtml(src)}" alt="${escapeHtml(b.dataset.photoAlt ?? '')}" />`;
+          viewer.addEventListener('click', (event) => { if (event.target === viewer || (event.target as HTMLElement).closest('.wx-photo-close')) viewer.remove(); });
+          document.body.append(viewer);
+        }),
+      );
+      // 头像 / 资料 → 个人主页
+      scroll.querySelectorAll<HTMLElement>('[data-profile]').forEach((b) =>
+        b.addEventListener('click', () => {
+          viewProfileId = b.dataset.profile as string;
+          wx = 'profile';
+          lastSig = '';
+          if (lastSave) paint(lastSave);
+        }),
+      );
+      // 个人主页 → TA 的朋友圈
+      scroll.querySelectorAll<HTMLElement>('[data-usermoments]').forEach((b) =>
+        b.addEventListener('click', () => {
+          viewProfileId = b.dataset.usermoments as string;
+          wx = 'userMoments';
+          lastSig = '';
+          if (lastSave) paint(lastSave);
+        }),
+      );
+      // 聊天信息 → 查找聊天记录
+      scroll.querySelectorAll<HTMLElement>('[data-chatsearch]').forEach((b) =>
+        b.addEventListener('click', () => {
+          searchQuery = '';
+          wx = 'chatsearch';
+          lastSig = '';
+          if (lastSave) paint(lastSave);
+          scroll.querySelector<HTMLInputElement>('.wx-search-in')?.focus();
+        }),
+      );
+      // 群聊入口：先占位（后续再接拉群功能）
+      scroll.querySelectorAll<HTMLElement>('[data-addgroup]').forEach((b) =>
+        b.addEventListener('click', () => {
+          ui.addLog('群聊还在路上，先把这里留个位置～');
+        }),
+      );
+      // 置顶聊天 / 消息免打扰 开关
+      scroll.querySelectorAll<HTMLInputElement>('.wx-pref-toggle').forEach((cbx) =>
+        cbx.addEventListener('change', () => {
+          const key = cbx.dataset.pref as 'pinned' | 'muted';
+          const pid = cbx.dataset.prefId as string;
+          cb.onChatPref(pid, { [key]: cbx.checked });
+          lastSig = '';
+          if (lastSave) paint(lastSave);
+        }),
+      );
+      // 查找聊天记录：本地过滤，**不触发整页重绘**（否则输入框会失焦）
+      scroll.querySelectorAll<HTMLInputElement>('.wx-search-in').forEach((inp) =>
+        inp.addEventListener('input', () => {
+          searchQuery = inp.value;
+          const box = scroll.querySelector<HTMLElement>('.wx-search-results');
+          if (box && lastSave && chatId) {
+            const q = searchQuery.trim();
+            const msgs = threadOf(lastSave, chatId).msgs;
+            const hits = q ? msgs.filter((m) => m.from !== 'sys' && m.text.includes(q)) : [];
+            box.innerHTML = q
+              ? hits.length
+                ? hits
+                    .map(
+                      (m) => `<div class="wx-sr"><span class="wx-sr-time">${hm(m.at)}</span><span class="wx-sr-txt">${highlight(m.text, q)}</span></div>`,
+                    )
+                    .join('')
+                : '<p class="ph-empty">没有找到相关聊天记录。</p>'
+              : '<p class="ph-empty">输入关键词，搜索你们之间的聊天记录。</p>';
+          }
+        }),
       );
       // 换头像
       scroll.querySelectorAll<HTMLElement>('[data-avatar]').forEach((b) =>
@@ -2154,10 +2625,23 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       const inWechatTab = page === 'wechat' && WX_TABS.includes(wx);
       tabs.hidden = !inWechatTab;
       appbar.hidden = page === 'home';
-      titleEl.textContent = TITLES[wx] ?? TITLES[page] ?? '';
+      // 聊天页顶栏显示**联系人名字**（居中），而不是"聊天"两个字——跟真微信一致
+      titleEl.textContent =
+        page === 'wechat' && wx === 'chat' && chatId
+          ? contactOf(save, chatId)?.name ?? TITLES[wx] ?? ''
+          : TITLES[wx] ?? TITLES[page] ?? '';
+      // 右上角「⋯」只在和某人聊天时出现 → 打开「聊天信息」
+      moreBtn.hidden = !(page === 'wechat' && wx === 'chat' && !!chatId);
       foot.hidden = !(page === 'wechat' && wx === 'chat' && canSend(chatId));
+      input.disabled = cb.openingInputLocked();
+      const openingLocked = input.disabled;
+      const wxSend = panel?.querySelector<HTMLButtonElement>('.wx-send');
+      if (wxSend) wxSend.disabled = openingLocked;
+      input.placeholder = openingLocked ? '请先选择剧情回复…' : '发消息…';
       // 快捷回复只在我的手机、且正对着她聊天时出现（跟输入栏同生共死）
-      quick.hidden = foot.hidden || owner !== 'me' || !quickOptions.length;
+      const herIsStillTyping = owner === 'me' && chatId === 'her' &&
+        (save.pendingMsgs ?? []).some((m) => m.owner === 'me' && m.contactId === 'her' && m.from === 'her');
+      quick.hidden = foot.hidden || owner !== 'me' || !quickOptions.length || herIsStillTyping;
       // 聊天页：重绘前记住"是否本来就贴着底部"，重绘后按需滚到底（不打断玩家上翻看历史）
       const chatView = page === 'wechat' && wx === 'chat';
       const nearBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 56;
@@ -2165,11 +2649,22 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       bindBody(save);
       if (chatView && nearBottom) scroll.scrollTop = scroll.scrollHeight;
       tabs.querySelectorAll<HTMLElement>('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === wx));
-      let un = totalUnread(save);
-      // 阶段 0 + 好友申请待处理 → 通讯录 tab 强制显示红点
-      const openingPending = save.metPeople.find((p) => p.id === 'her-opening' && !p.added);
-      if (openingPending) un = Math.max(un, 1);
-      dot.hidden = un === 0;
+      // 微信规矩：
+      //  ·「消息」tab 只显示真实未读消息总数（好友申请不是消息，不在这儿算）
+      //  ·「通讯录」tab 显示待处理的好友申请数（新朋友）
+      const un = totalUnread(save);
+      unreadCount.textContent = un > 99 ? '99+' : String(un);
+      unreadCount.hidden = un === 0;
+      // 新朋友门控：内心戏没点完之前，通讯录 tab 本身锁住（点不进去），
+      // 但底栏的红点"1"照常亮——提示有新朋友待处理，先把心里话点完。
+      const contactsTab = tabs.querySelector<HTMLButtonElement>('[data-tab="contacts"]');
+      if (contactsTab) {
+        contactsTab.disabled = openingNeixinPending;
+        contactsTab.classList.toggle('locked', openingNeixinPending);
+      }
+      const pendingCount = (save.metPeople ?? []).filter((p) => !p.added).length;
+      contactsBadgeEl.textContent = pendingCount > 99 ? '99+' : String(pendingCount);
+      contactsBadgeEl.hidden = pendingCount === 0;
     }
 
     function openChat(contactId: string): void {
@@ -2184,13 +2679,33 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       if (canSend(contactId)) window.setTimeout(() => input.focus(), 60);
     }
 
+    // 每个微信子页"属于"哪个底栏 tab：返回时落回一个能站住的 tab。
+    // 绝不能直接 wx = lastWx —— 从新朋友进备注时 lastWx 会被设成 'newfriends',
+    // 那样在新朋友页按返回就回到新朋友自身，原地打转、永远退不出去。
+    const SUB_TAB: Partial<Record<WxPage, WxPage>> = {
+      newfriends: 'contacts',
+      onlychat: 'contacts',
+      remark: 'newfriends', // 备注页先回"新的朋友"，它再回通讯录（链路必然收敛）
+      chat: 'chats',
+      moments: 'discover',
+      avatar: 'me',
+      status: 'me',
+      chatinfo: 'chat', // 聊天信息 → 回到和 TA 的聊天
+      chatsearch: 'chatinfo',
+      profile: 'chatinfo',
+      userMoments: 'profile',
+    };
     // 返回：微信子页 → 微信 tab → 主屏
     const back = (): void => {
       if (page === 'wechat') {
         if (WX_TABS.includes(wx)) {
           page = 'home';
         } else {
-          wx = lastWx;
+          // 子页：回到它所属的 tab；拿不准就回消息列表，而不是卡在原地
+          const target = (SUB_TAB[wx] ?? (WX_TABS.includes(lastWx) ? lastWx : 'chats')) as WxPage;
+          wx = target;
+          // 让 lastWx 也指向一个"能站住"的 tab，避免下一级返回再次打转
+          if (WX_TABS.includes(target)) lastWx = target;
         }
       } else {
         page = 'home';
@@ -2199,8 +2714,16 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       if (lastSave) paint(lastSave);
     };
     panel.querySelector<HTMLElement>('.wx-back')!.addEventListener('click', back);
+    // 右上角「⋯」→ 聊天信息
+    moreBtn.addEventListener('click', () => {
+      if (page !== 'wechat' || wx !== 'chat' || !chatId) return;
+      wx = 'chatinfo';
+      lastSig = '';
+      if (lastSave) paint(lastSave);
+    });
 
     const send = (): void => {
+      if (cb.openingInputLocked()) return;
       const v = input.value.trim();
       if (!v || !chatId) return;
       input.value = '';
@@ -2239,9 +2762,15 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
         lastSig = sig;
         paint(save);
       },
+      forceRepaint() {
+        lastSig = '';
+        if (lastSave) paint(lastSave);
+      },
       notifyHerMsg() {
         const viewing = open === 'myphone' && page === 'wechat' && wx === 'chat' && chatId === 'her';
         if (viewing) return;
+        // 消息免打扰：不给红点（但消息照样进记录，翻进去还能看到）
+        if (lastSave && lastSave.chatPrefs?.['her']?.muted) return;
         unreadReal += 1;
         lastSig = '';
         if (lastSave) paint(lastSave);
@@ -2262,7 +2791,9 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
             onPick(label);
           }),
         );
-        quick.hidden = foot.hidden || owner !== 'me' || !quickOptions.length;
+        const herIsStillTyping = owner === 'me' && chatId === 'her' &&
+          (lastSave?.pendingMsgs ?? []).some((m) => m.owner === 'me' && m.contactId === 'her' && m.from === 'her');
+        quick.hidden = foot.hidden || owner !== 'me' || !quickOptions.length || !!herIsStillTyping;
       },
       hideQuickReplies() {
         quickOptions = [];

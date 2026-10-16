@@ -1,5 +1,5 @@
 import type { Gender, SaveData } from '../core/types';
-import { formatClock, memoriesFor } from '../core/store';
+import { formatClock, memoriesFor, threadFor } from '../core/store';
 import { genderCn, pronoun, youth } from '../core/gender';
 import { AFFINITY_MAX } from '../core/story';
 
@@ -22,6 +22,12 @@ export interface ModelContext {
   personaBlock: string;
   memoryBlock: string;
   recentBlock: string;
+  /**
+   * 最近的**真实聊天记录**（最旧→最新，逐条）。
+   * 关键：她自己的回复大多**不会**进记忆，所以只靠 memoryBlock 她会"读不到自己刚说过什么"，
+   * 出现"刚说完拜拜，玩家回拜拜，她又问你刚下线"这种断裂。把原话带上是唯一可靠的办法。
+   */
+  transcript: string;
   /** 她此刻在哪（在家/出门），供模型保持情境一致 */
   placeBlock: string;
 }
@@ -117,6 +123,15 @@ export function buildContext(save: SaveData, userText: string, placeLine = ''): 
       .map((m) => m.summary)
       .join('；') || '（无）';
 
+  // 最近的对话原话（含剧本台词）：她自己的回复不进记忆，只能靠这里读到
+  const th = threadFor(save, 'me', 'her');
+  const transcript =
+    (th?.msgs ?? [])
+      .filter((m) => m.from === 'owner' || m.from === 'her')
+      .slice(-12)
+      .map((m) => `${m.from === 'her' ? '你' : save.playerName}：${m.image ? '[图片]' : m.text}`)
+      .join('\n') || '（还没聊过）';
+
   return {
     boyName: p.name,
     gender: p.gender,
@@ -131,6 +146,7 @@ export function buildContext(save: SaveData, userText: string, placeLine = ''): 
     personaBlock,
     memoryBlock,
     recentBlock,
+    transcript,
     placeBlock: placeLine,
   };
 }
@@ -140,8 +156,12 @@ export const SYSTEM_PROMPT = `你要扮演一个具有持续生活状态的 AI �
 主线背景（**由剧情脚本在特定节点揭示，你不要自己推进、也不要提前剧透**）：刚认识时，好友申请只写「我是名字」。若对方问起你为什么加他，先说是「做梦梦到你的微信号」——因为你怕提外婆遗物会吓到对方。关于外婆、旧书里那张写着号码的纸条、以及"两个人可能不在同一个世界"，都还没到能说的时候：即使被追问，也只说你还没准备好、或者说做梦梦到的，不要主动提起这些。主角性别由玩家选择，避免默认称呼为男生或女生。
 
 铁律：
+0. **回话前先读「你们最近的聊天记录」**——先弄清上一句是谁说的、说了什么，再顺着接。
+   不要答非所问、不要像不记得刚发生的事。如果对方只是道别或随口应一声（「拜拜」「好的」「嗯」
+   「晚安」这类不需要回应的话），你**有权选择不回**：把 skip 填 1、line 留空即可。
+   宁可偶尔不回，也不要硬接一句和上文无关的话。skip 只在"确实没什么好回"时才用，别滥用。
 1. 只输出一个 JSON 对象，不要任何解释、markdown 代码块或多余文字。
-2. JSON 字段固定为：line(台词字符串)、emotion(情绪)、action(动作)、intensity(数值)、affinityDelta(数值)、memorable(0或1)。
+2. JSON 字段固定为：line(台词字符串)、emotion(情绪)、action(动作)、intensity(数值)、affinityDelta(数值)、memorable(0或1)、skip(0或1)。
 3. emotion 只能是：happy, calm, shy, sleepy, sulky, excited 之一。
 4. action 只能是：idle, reading, resting, playing_game, stretching, cooking, sleeping, talking 之一。
 5. intensity 是 -1 到 1 的小数，代表情绪强度和语气投入程度。
@@ -159,6 +179,7 @@ export function buildMessages(ctx: ModelContext, userText: string) {
     `你正在${ctx.activity}，心情${ctx.mood}。房间整洁度 ${ctx.tidiness}/100。`,
     `【关系】关系进展值 ${ctx.affinity}/${AFFINITY_MAX}。${affinityTier(ctx.affinity, ctx.gender)}`,
     `【你记得的事】${ctx.memoryBlock}`,
+    `【你们最近的聊天记录（最旧→最新）】\n${ctx.transcript}`,
     `【刚刚发生】${ctx.recentBlock}`,
   ]
     .filter(Boolean)

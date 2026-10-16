@@ -114,6 +114,9 @@ export function sanitizeIntent(
   // memorable：只认 0/1
   let memorable: 0 | 1 = o.memorable === 1 || o.memorable === '1' ? 1 : 0;
 
+  // skip：她选择"这次不回"。只认 1/'1'
+  const skip: 0 | 1 = o.skip === 1 || o.skip === '1' ? 1 : 0;
+
   return {
     intent: {
       line,
@@ -122,6 +125,7 @@ export function sanitizeIntent(
       intensity: Math.round(intensity * 100) / 100,
       affinityDelta: Math.round(affinityDelta * 10) / 10,
       memorable,
+      skip,
     },
     repaired,
     fallback: raw === null || raw === undefined,

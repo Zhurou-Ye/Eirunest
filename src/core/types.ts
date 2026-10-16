@@ -248,11 +248,18 @@ export interface MomentEntry {
   iso: string;
   at: number;
   text: string;
+  /** 配图：直接给图片路径（她过去的朋友圈历史用这个） */
+  img?: string;
+  /** 配图说明（alt） */
+  caption?: string;
+  /** 旧的口径：按地点取内置插画 */
   placeId?: string;
   /** 朋友的点赞数（TA 自己算的） */
   likes: number;
   /** 你有没有点过赞 */
   likedByMe: boolean;
+  /** 当前视角可见的共同好友点赞者；不在此名单里的总点赞数不展示。 */
+  visibleLikeNames?: string[];
   kind: 'outing' | 'diary' | 'gift' | 'event' | 'mine';
   /** 评论区 */
   comments: MomentComment[];
@@ -320,7 +327,8 @@ export interface PendingMsg {
   /** 消息落在哪部手机的会话里 */
   owner: 'her' | 'me';
   contactId: string;
-  from: 'her' | 'me';
+  /** 'sys' = 微信系统灰字（如「你已添加了…」），送达后也是居中灰字，不算谁说的话 */
+  from: 'her' | 'me' | 'sys';
   text: string;
   /** 图片消息：送达后进会话，成为一条可翻回、可点开的图片消息 */
   image?: string;
@@ -434,6 +442,13 @@ export interface SaveData {
   /** 人格倾向的变动史：让她"为什么变成现在这样"可回溯 */
   traitHistory: TraitPoint[];
   /**
+   * 每个会话的偏好：置顶 / 消息免打扰。key = 联系人 id。
+   * 不放在 ChatThread 上——还没聊过的联系人没有 thread，也可能想先置顶/免打扰。
+   */
+  chatPrefs?: Record<string, { pinned?: boolean; muted?: boolean }>;
+  /** 这个档注册/开局那一刻的真实时间（ms）。朋友圈历史日期从它往前推。 */
+  registeredAt?: number;
+  /**
    * 关系数值的口径版本。
    * 老存档是 0~100 的一套，读到没有这个字段的存档要把它放大到 0~1000，
    * 否则老玩家一进来进度就几乎归零。
@@ -485,6 +500,11 @@ export interface IntentSchema {
   affinityDelta: number;
   /** 是否记住这件事（0/1） */
   memorable: 0 | 1;
+  /**
+   * 她选择**这次不回复**（0/1）。用于"对方只是道别/随口应一声，确实没什么好接的"——
+   * 真人不会每句都回。skip=1 时 line 会被忽略，引擎不发这条消息。
+   */
+  skip?: 0 | 1;
 }
 
 export interface DialogueTurn {

@@ -135,9 +135,9 @@ console.log('\n[9] 原型污染与额外字段');
   );
   const r = sanitizeIntent(evil, 'x', 'calm', 'idle');
   check(
-    '意图里只剩 6 个白名单字段',
+    '意图里只剩白名单字段（含后来的 skip）',
     Object.keys(r.intent).sort().join(','),
-    'action,affinityDelta,emotion,intensity,line,memorable',
+    'action,affinityDelta,emotion,intensity,line,memorable,skip',
   );
   check('原型未被污染', ({}).polluted, undefined);
 }
