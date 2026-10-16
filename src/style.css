@@ -210,6 +210,39 @@ body {
   animation-delay: 0.3s;
 }
 
+/* 玩家的内心独白（心理弹幕）：右上、虚线框、斜体——和她的气泡明确区分 */
+.inner-voice {
+  position: absolute;
+  right: 14px;
+  top: calc(var(--safe-top) + 68px);
+  z-index: 3;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: min(238px, 58vw);
+  padding: 8px 12px;
+  border-radius: 14px;
+  border: 1px dashed rgba(255, 208, 138, 0.5);
+  background: rgba(40, 31, 21, 0.9);
+  color: #f2d7a4;
+  font-size: 12.5px;
+  line-height: 1.65;
+  font-style: italic;
+  opacity: 0;
+  transform: translateY(-4px);
+  transition: opacity 0.25s var(--ease), transform 0.25s var(--ease);
+  pointer-events: none;
+}
+
+.inner-voice.on {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.inner-voice i {
+  font-style: normal;
+}
+
 @keyframes bounce {
   0%,
   70%,
