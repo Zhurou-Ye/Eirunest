@@ -5,7 +5,12 @@
  * 她因想查明外婆悲伤一生的原因，违背遗训添加了一个陌生微信。
  * 真相在后续聊天中逐步揭开，开场不主动提及遗物。
  *
- * 这一段对话每个角色有不同版本（性格 + 性别）。
+ * 她说出口的理由是「做梦梦到了你的微信号」——这是谎：真实目的是想试探
+ * 对方知不知道外婆过世的真相，但怕吓到他，好感够了（坦白那一幕）才敢说。
+ * 所以每种性格的开场都要把这句轻喜剧版本的谎说圆，并且**不能剧透**。
+ *
+ * 结尾一律是"邀请继续聊"，不能是道别——道别句会和模型接下来的回复撞成
+ * 精分（她说"下次见"，下一句又问"你在吗"）。
  */
 
 import type { Gender, PersonalityPreset } from './types';
@@ -18,8 +23,8 @@ export interface OpeningLine {
 
 /**
  * 一条"剧情分钟"折算成多少真实毫秒。
- * 1 分钟 ≈ 4 秒，于是整段开场白（最长 10.8 分钟）会在约 43 秒里
- * 一条条慢慢展开，像真人一个字一个字打完发出来，而不是一秒钟全砸出来。
+ * 1 分钟 ≈ 4 秒，于是整段开场白会在约 35 秒里一条条慢慢展开，
+ * 像真人一个字一个字打完发出来，而不是一秒钟全砸出来。
  */
 export const OPENING_MS_PER_MIN = 4_000;
 
@@ -33,95 +38,77 @@ export function buildOpening(
   herName: string,
   playerName: string,
 ): OpeningLine[] {
-  // 通用骨架
   // 玩家没填名字时 store 会兜底成"你"。直接把"你"塞进句子里会读成
   // "嗯……你对吧" 这种怪话，所以没真名时改用不喊名字的说法。
   const who = playerName && playerName !== '你' ? playerName : '';
+
+  // 前三句所有性格共用：打招呼 → 铺垫 → 把"梦"说出口。
   const base: OpeningLine[] = [
     {
       delayMin: 0,
       text: '你好！谢谢你通过好友申请。',
     },
     {
-      delayMin: 1.5,
-      text: `先自我介绍一下吧，我叫${herName}。`,
+      delayMin: 1.2,
+      text: `我叫${herName}。……接下来的事，你可能觉得离谱。`,
     },
     {
-      delayMin: 2.4,
-      text: '其实我也不知道该怎么开场……先打个招呼好了。',
+      delayMin: 2.8,
+      text: '我做梦梦到了你的微信号。醒来还记得，一个数字都不差。',
     },
   ];
 
-  // 按性格微调
-  if (preset === 'gentle') {
-    base.push({
-      delayMin: 7.0,
-      text: who ? `你叫${who}对吧？希望申请消息没吓到你。` : '希望申请消息没吓到你。',
+  // 中段按性格微调：都在给"梦"找补，并留下"其实还有别的事，但现在不敢说"的引子
+  const mid: OpeningLine[] = [];
+  let end: OpeningLine;
+  if (preset === 'sunny') {
+    mid.push(
+      who
+        ? { delayMin: 4.6, text: `${who}！很像是轻小说开局吧！我自己都吓了一跳！` }
+        : { delayMin: 4.6, text: '很像是轻小说开局吧！我自己都吓了一跳！' },
+    );
+    mid.push({
+      delayMin: 6.6,
+      text: '其实梦里还乱糟糟的，有些东西我现在不敢讲……怕把你笑到。',
     });
-    base.push({
-      delayMin: 8.5,
-      text: '嗯……如果你想问我为什么加你，我可以慢慢说。',
+    end = { delayMin: 8.6, text: '总之以后请多指教啦！我们慢慢聊。' };
+  } else if (preset === 'gentle') {
+    mid.push(
+      who
+        ? { delayMin: 4.6, text: `${who}……嗯，我知道很难信。可以先不把我当正常人。` }
+        : { delayMin: 4.6, text: '……嗯，我知道很难信。可以先不把我当正常人。' },
+    );
+    mid.push({
+      delayMin: 6.6,
+      text: '其实我还有些事想问你。不过不着急，可以慢慢来吗？',
     });
-    base.push({
-      delayMin: 9.6,
-      text: '最近总觉得，好像在哪里见过你的名字。',
-    });
-  } else if (preset === 'sunny') {
-    base.push({
-      delayMin: 7.0,
-      text: who ? `你叫${who}对吧！` : '很高兴认识你！',
-    });
-    base.push({
-      delayMin: 7.5,
-      text: '其实是做梦梦到你的微信号，醒来就记住了。听起来很离谱吧？',
-    });
-    base.push({
-      delayMin: 9.0,
-      text: '我也觉得像轻小说情节……可能只是巧合！',
-    });
-    base.push({
-      delayMin: 10.5,
-      text: '好了，先不聊这个。你最近在忙什么？',
-    });
+    end = { delayMin: 8.6, text: '那……从今天开始，请多指教。' };
   } else if (preset === 'cool') {
-    base.push({
-      delayMin: 7.0,
-      text: who ? `……${who}，对吧。` : '……很高兴认识你。',
+    mid.push(
+      who
+        ? { delayMin: 4.6, text: `……${who}，对吧。别笑，我自己知道很荒唐。` }
+        : { delayMin: 4.6, text: '……别笑，我自己知道很荒唐。' },
+    );
+    mid.push({
+      delayMin: 6.6,
+      text: '加都加了。反正只是个梦……而已。',
     });
-    base.push({
-      delayMin: 8.0,
-      text: '其实我做梦梦到过你的微信号。听起来很荒唐，所以先没敢说。',
-    });
-    base.push({
-      delayMin: 9.0,
-      text: '别误会，我只是做了个梦。嗯，就这样。',
-    });
-    base.push({
-      delayMin: 10.5,
-      text: '我没当回事。结果……加到了。',
-    });
+    end = { delayMin: 8.6, text: '嗯。……总之，以后有事就说。' };
   } else {
-    base.push({
-      delayMin: 7.0,
-      text: who ? `嗯……${who}对吧。` : '嗯……很高兴认识你。',
+    // clingy
+    mid.push(
+      who
+        ? { delayMin: 4.6, text: `${who}！你居然真的通过了……谢谢你！` }
+        : { delayMin: 4.6, text: '你居然真的通过了……谢谢你！' },
+    );
+    mid.push({
+      delayMin: 6.6,
+      text: '我、我还有点紧张……但梦的事是真的哦，我保证！',
     });
-    base.push({
-      delayMin: 8.0,
-      text: '你平时喜欢什么？我有点不太会找话题。',
-    });
-    base.push({
-      delayMin: 9.5,
-      text: '现在我也不懂。但既然到了，就先认识一下？',
-    });
+    end = { delayMin: 8.6, text: '那、那我们慢慢聊！我会尽量不吵到你的……' };
   }
 
-  // 收尾一句都一样的希望
-  base.push({
-    delayMin: base[base.length - 1].delayMin + 2.0,
-    text: '那我们先聊聊吧。下次见。',
-  });
-
-  return base;
+  return [...base, ...mid, end];
 }
 
 /**
