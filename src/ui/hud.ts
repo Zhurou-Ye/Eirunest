@@ -39,6 +39,8 @@ import type { LlmConfig } from '../ai/client';
 
 export interface UICallbacks {
   onSend(text: string): void;
+  /** 玩家从开局剧本的快捷回复里选了一句 */
+  onOpeningPick(label: string): void;
   onTouch(part: TouchKind): void;
   onGift(id: string): void;
   onActivity(id: string): void;
@@ -104,8 +106,16 @@ export interface PresenceInfo {
 export interface UI {
   setBubble(text: string): void;
   setBubbleHint(text: string): void;
-  /** 玩家的内心独白（心理弹幕），不是她说的 */
-  setInnerVoice(text: string, durationMs?: number): void;
+  /** 玩家的内心独白（OS）：固定显示在顶部；big = 像标语一样大字强调一下 */
+  setOS(text: string, big?: boolean): void;
+  /** 开局剧本的快捷回复（玩家的可选台词） */
+  showOpeningChoices(labels: string[]): void;
+  hideOpeningChoices(): void;
+  /** 玩家的内心独白（OS），不是她说的 */
+  setOS(text: string, big?: boolean): void;
+  /** 开局剧本的快捷回复（玩家的可选台词） */
+  showOpeningChoices(labels: string[]): void;
+  hideOpeningChoices(): void;
   setThinking(v: boolean): void;
   setModelStatus(text: string, offline: boolean): void;
   setLatency(ms: number, usedModel: boolean): void;
@@ -183,19 +193,20 @@ const TOUCH_ITEMS: { kind: TouchKind; label: string; hint: string }[] = [
 /**
  * 一开始用不上的功能一律锁着（置灰 + 🔒），点了给提示、不开空面板。
  * 解锁节奏跟着剧情走：
- *   - 她的手机 / 地图 / 商城：阶段 >= 1（你能看见她的世界）之后
- *   - 互动 / 送礼：买到实体（她真的来到你身边）之后
+ *   - 她的手机 / 地图：阶段 >= 1（你能看见她的世界）之后
+ *   - 商城 / 互动 / 送礼：实体破壁（她真的来到你身边）之后——
+ *     商店是她那边的东西，破壁前"在自己手机里逛商店"没有意义
  */
 const LOCKED_PANELS: PanelName[] = ['phone', 'map', 'shop', 'touch', 'gift'];
 
 function panelLockHint(name: PanelName, save: SaveData | null): string | null {
   const phase = save?.story?.phase ?? 0;
   const hasPhysical = save?.story?.hasPhysical ?? false;
-  if (name === 'phone' || name === 'map' || name === 'shop') {
+  if (name === 'phone' || name === 'map') {
     if (phase < 1) return '能看见她的世界之后，这里才打得的开。';
   }
-  if (name === 'touch' || name === 'gift') {
-    if (!hasPhysical) return '还碰不到她……羁绊再往前走走。';
+  if (name === 'shop' || name === 'touch' || name === 'gift') {
+    if (!hasPhysical) return '等她来到你身边之后，这里才用得上。';
   }
   return null;
 }
@@ -233,8 +244,11 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           <div class="think" id="ui-think" hidden><span></span><span></span><span></span></div>
         </div>
 
-        <!-- 玩家的内心独白（心理弹幕）：不是她说的，是"我"心里的话 -->
-        <div class="inner-voice" id="ui-inner" hidden><i>💭</i><span id="ui-inner-txt"></span></div>
+        <!-- 玩家的内心独白（OS）：固定在顶部，和她的话明确区分 -->
+        <div class="os" id="ui-os" hidden>
+          <span class="os-tag">OS</span>
+          <span class="os-txt" id="ui-os-txt"></span>
+        </div>
 
         <div class="log" id="ui-log"></div>
 
@@ -472,8 +486,8 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
   let lastPresenceKey = '';
   /** 时间输入框被用户改过：改过就不要再被时钟回写覆盖，直到点"设定/同步" */
   let timeDirty = false;
-  /** 心声（心理弹幕）的自动消失定时器 */
-  let innerVoiceTimer: number | null = null;
+  /** 心声（OS）大字模式的自动缩回定时器 */
+  let bigTimer: number | null = null;
 
   // ── 选人界面 ────────────────────────────
   const roleList = $<HTMLDivElement>('role-list');
@@ -744,22 +758,31 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     },
 
     /**
-     * 玩家的内心独白（心理弹幕）——不是她说的，是"我"心里的话。
-     * 样式上和她的气泡明确区分（右上、💭、虚线框），避免读者搞混说话人。
+     * 玩家的内心独白（OS）——不是她说的，是"我"心里的话。
+     * 固定在顶部一条（和她的气泡、和日志都区分开）；big = 像标语一样
+     * 大字强调几秒，再缩回固定那条（开场心理要超级明显）。
      */
-    setInnerVoice(text: string, durationMs = 5200) {
-      const box = $<HTMLDivElement>('ui-inner');
-      const txt = $<HTMLSpanElement>('ui-inner-txt');
+    setOS(text: string, big = false) {
+      const box = $<HTMLDivElement>('ui-os');
+      const txt = $<HTMLSpanElement>('ui-os-txt');
+      if (txt.textContent === text && !big) return;
       txt.textContent = text;
       box.hidden = false;
       box.classList.add('on');
-      if (innerVoiceTimer) clearTimeout(innerVoiceTimer);
-      innerVoiceTimer = window.setTimeout(() => {
-        box.classList.remove('on');
-        window.setTimeout(() => {
-          box.hidden = true;
-        }, 300);
-      }, durationMs);
+      box.classList.toggle('big', big);
+      if (bigTimer) clearTimeout(bigTimer);
+      if (big) {
+        bigTimer = window.setTimeout(() => box.classList.remove('big'), 2800);
+      }
+    },
+
+    /** 开局剧本的快捷回复：显示在聊天输入栏上方（我手机的微信里） */
+    showOpeningChoices(labels: string[]) {
+      phones.me.showQuickReplies(labels, (label) => cb.onOpeningPick(label));
+    },
+
+    hideOpeningChoices() {
+      phones.me.hideQuickReplies();
     },
 
     setThinking(v: boolean) {
@@ -1210,6 +1233,9 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     notifyHerMsg(): void;
     openChat(contactId: string): void;
     openContacts(): void;
+    /** 开局剧本的快捷回复（玩家的可选台词），仅我的手机用 */
+    showQuickReplies(labels: string[], onPick: (label: string) => void): void;
+    hideQuickReplies(): void;
   }
 
   /**
@@ -1241,6 +1267,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
               <span class="wx-title"></span>
             </div>
             <div class="wx-scroll"></div>
+            <div class="wx-quick" hidden></div>
             <div class="wx-foot" hidden>
               <input class="wx-input" type="text" placeholder="发消息…" autocomplete="off" />
               <button class="wx-send">发送</button>
@@ -1260,6 +1287,9 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     const titleEl = panel.querySelector<HTMLElement>('.wx-title')!;
     const scroll = panel.querySelector<HTMLElement>('.wx-scroll')!;
     const foot = panel.querySelector<HTMLElement>('.wx-foot')!;
+    const quick = panel.querySelector<HTMLElement>('.wx-quick')!;
+    /** 开局剧本的待选台词（玩家还没选）；空 = 不显示快捷回复 */
+    let quickOptions: string[] = [];
     const input = panel.querySelector<HTMLInputElement>('.wx-input')!;
     const tabs = panel.querySelector<HTMLElement>('.wx-tabs')!;
     const dot = panel.querySelector<HTMLElement>('.wx-dot')!;
@@ -1351,8 +1381,9 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       const her = owner === 'her';
       const name = her ? save.character.personality.name : save.playerName;
       const phase = save.story?.phase ?? 0;
-      // 我这边的主屏副标题跟着剧情阶段走，不再暗示"共处一室"：
-      // 起初只是隔屏联系，能看见她那边的世界之后，才是"在场"。
+      // 我这边的主屏副标题跟着剧情阶段走：
+      // 起初只是"一个普通的日子"——玩家这时候还不知道她在另一个世界，
+      // 那句"隔着两个世界"是剧透，不能放在开局；看得见她的世界之后才是"在场"。
       const sub = her
         ? lastPresence?.away
           ? `${lastPresence.emoji} 在${lastPresence.placeName}`
@@ -1361,17 +1392,16 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           ? `${tp(save)}来到你身边了`
           : phase >= 1
             ? '你能看见那边的世界了'
-            : '隔着两个世界';
+            : '';
 
-      // 我手机：阶段 0 只有微信/日记/日程，天气删除；她那边的手机保留天气。
-      // 相机在世界解锁后（我这边能看见）才出现；她手机一直可用。
+      // 我手机：阶段 0 只有微信/日记/日程。商店不在我手机上——那是她那边的东西，
+      // 等实体破壁、能去她的世界之后才谈得上"买东西"（现在放了只会让人困惑）。
       const apps: { id: string; ico: string; label: string; locked?: boolean }[] = [
         { id: 'wechat', ico: '💬', label: '微信' },
         ...(owner === 'her' || phase >= 1 ? [{ id: 'camera', ico: '📷', label: '相机' }] : []),
         { id: 'diary', ico: '📖', label: '日记' },
         { id: 'schedule', ico: '🗓️', label: '日程' },
         ...(owner === 'her' ? [{ id: 'weather', ico: '🌤️', label: '天气' }] : []),
-        { id: 'shop', ico: '🛒', label: '商店' },
       ];
       return `<div class="ph-wall">
           <div class="ph-wall-row"><b>${formatClock(save.clock)}</b><span>${WEEKDAY_CN[new Date().getDay()]} · 第 ${Math.floor(save.clock / 24) + 1} 天</span></div>
@@ -1619,6 +1649,10 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
         stLine +
         msgs
           .map((m) => {
+            // 系统提示（如"我通过了你的朋友验证请求…"）：微信里那种居中灰字，不是谁说的话
+            if (m.from === 'sys') {
+              return `<div class="wx-sys">${escapeHtml(m.text)}</div>`;
+            }
             const mine = isMineMsg(m, tOwner);
             const ava = mine
               ? ''
@@ -2096,6 +2130,8 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       appbar.hidden = page === 'home';
       titleEl.textContent = TITLES[wx] ?? TITLES[page] ?? '';
       foot.hidden = !(page === 'wechat' && wx === 'chat' && canSend(chatId));
+      // 快捷回复只在我的手机、且正对着她聊天时出现（跟输入栏同生共死）
+      quick.hidden = foot.hidden || owner !== 'me' || !quickOptions.length;
       // 聊天页：重绘前记住"是否本来就贴着底部"，重绘后按需滚到底（不打断玩家上翻看历史）
       const chatView = page === 'wechat' && wx === 'chat';
       const nearBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 56;
@@ -2183,6 +2219,28 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
         unreadReal += 1;
         lastSig = '';
         if (lastSave) paint(lastSave);
+      },
+      /** 开局剧本的快捷回复（玩家的可选台词） */
+      showQuickReplies(labels: string[], onPick: (label: string) => void) {
+        // 每 tick 都会来问一次，同样的选项不重渲（否则按钮会闪）
+        if (quickOptions.join('|') === labels.join('|') && !quick.hidden) return;
+        quickOptions = labels;
+        quick.innerHTML = labels
+          .map((l) => `<button class="wx-quick-btn" data-quick="${escapeHtml(l)}">${escapeHtml(l)}</button>`)
+          .join('');
+        quick.querySelectorAll<HTMLButtonElement>('[data-quick]').forEach((b) =>
+          b.addEventListener('click', () => {
+            const label = b.dataset.quick ?? '';
+            quickOptions = [];
+            quick.hidden = true;
+            onPick(label);
+          }),
+        );
+        quick.hidden = foot.hidden || owner !== 'me' || !quickOptions.length;
+      },
+      hideQuickReplies() {
+        quickOptions = [];
+        quick.hidden = true;
       },
       openChat,
     };
