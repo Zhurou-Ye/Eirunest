@@ -1,127 +1,256 @@
 /**
- * 开场固定对话（不耗 token）。
+ * 开局固定对话剧本（分支树，不耗 token）。
  *
  * 剧情背景：
  * 她因想查明外婆悲伤一生的原因，违背遗训添加了一个陌生微信。
- * 真相在后续聊天中逐步揭开，开场不主动提及遗物。
- *
  * 她说出口的理由是「做梦梦到了你的微信号」——这是谎：真实目的是想试探
  * 对方知不知道外婆过世的真相，但怕吓到他，好感够了（坦白那一幕）才敢说。
- * 所以每种性格的开场都要把这句轻喜剧版本的谎说圆，并且**不能剧透**。
  *
- * 结尾一律是"邀请继续聊"，不能是道别——道别句会和模型接下来的回复撞成
- * 精分（她说"下次见"，下一句又问"你在吗"）。
+ * 剧本结构（2026-10-16 用户给定）：
+ *   系统提示（好友验证通过）→ 她澄清不是骗子 → 分支1（调侃/反诈）
+ *   → 讲梦 → 分支2（玄学/考试答案·彩票）→ 汇合 → 分支3（缘分/看戏）
+ *   → 自我介绍 → 固定收尾 → 她道别 → 自由聊天
+ *
+ * 设计约束：
+ *   - 每一"层"她说完就停，等玩家从快捷回复里选一句；选完才播下一层。
+ *   - 玩家直接打字（不走快捷回复）= 放弃剧本：取消未播的台词，交给模型自由聊。
+ *   - 刷新页面后从聊天记录重建进度（最后一条她的台词能定位到当前节点）。
  */
 
 import type { Gender, PersonalityPreset } from './types';
 
-export interface OpeningLine {
-  text: string;
-  /** 发送时间偏移（"剧情分钟"），从接受好友申请算起 */
-  delayMin: number;
+export interface OpeningChoice {
+  /** 快捷回复按钮上的文字（也就是玩家发出去的那句） */
+  label: string;
+  /** 点完后接着跑的节点 */
+  next: OpeningNode;
+}
+
+export interface OpeningNode {
+  /** 她依次发的话（逐条送达） */
+  her: string[];
+  /** 她说完时玩家心里的声音（OS，大字呈现） */
+  os?: string;
+  /** 发完后等玩家选；没有 = 剧本结束，回到自由聊天 */
+  options?: OpeningChoice[];
+}
+
+/** 一条"剧情分钟"折算成多少真实毫秒。1 分钟 ≈ 4 秒，像真人在打字。 */
+export const OPENING_MS_PER_MIN = 4_000;
+
+/** 层内每条台词的间隔（剧情分钟） */
+const BEAT = 0.9;
+
+function beats(lines: string[]): Array<{ text: string; delayMin: number }> {
+  return lines.map((text, i) => ({ text, delayMin: i * BEAT }));
+}
+
+/** 第三层汇合后的两个态度选项（调侃/反诈两条路都汇到这儿）。
+ *  自我介绍 + 结尾固定对话连成一层，最后只问一次"请多指教"。 */
+function warmChoices(herName: string, student: boolean): OpeningChoice[] {
+  const intro = student
+    ? `我叫${herName}，是个普通的高中生，平时除了上课写作业，最喜欢捣鼓各种吃的和奇奇怪怪的小玩意儿。`
+    : `我叫${herName}，是个再普通不过的上班族，平时除了上班，最喜欢捣鼓各种吃的和奇奇怪怪的小玩意儿。`;
+  return [
+    {
+      label: '删啥呀，多好玩啊，四舍五入算咱俩有玄学缘分了~',
+      next: {
+        her: [
+          '嘿嘿，太好了！感觉你这个人好好玩、也很好说话呢！（心里松了一口气）',
+          '那……既然都打扰到你了，自我介绍一下吧！',
+          intro,
+          '虽然这个开头有点莫名其妙……但既然能凭着梦里的数字搜到你，感觉真的很神奇！',
+          '那……以后我们可以顺其自然地做个朋友吗？(๑•̀ㅂ•́)و',
+        ],
+        os: '嗯……不像坏人。还挺有意思一人。',
+        options: [
+          {
+            label: '行啊，那就请多指教啦，神秘的「梦中友人」~',
+            next: goodbye(student),
+          },
+        ],
+      },
+    },
+    {
+      label: '不删不删，我还等着看这个「梦里蹦出来的微信号」后续有啥新剧情呢（搬砖观影）',
+      next: {
+        her: [
+          '哈哈哈哈你居然还带看戏的！不过你性格真好，一点都不凶！',
+          '那……既然都打扰到你了，自我介绍一下吧！',
+          intro,
+          '虽然这个开头有点莫名其妙……但既然能凭着梦里的数字搜到你，感觉真的很神奇！',
+          '那……以后我们可以顺其自然地做个朋友吗？(๑•̀ㅂ•́)و',
+        ],
+        os: '噗……这人有点意思。',
+        options: [
+          {
+            label: '行啊，那就请多指教啦，神秘的「梦中友人」~',
+            next: goodbye(student),
+          },
+        ],
+      },
+    },
+  ];
+}
+
+/** 结尾道别（试探成功，初步信任建立）→ 剧本结束，回到自由聊天 */
+function goodbye(student: boolean): OpeningNode {
+  return {
+    her: [
+      '收到！请多指教！',
+      student
+        ? '呀，不跟你吹水啦，我得赶快去补今天的作业了……不然明天又要被老师盯上了，惨惨惨！(>_<)'
+        : '呀，不跟你聊了，我今天还得加个班……不然明天又要被主管盯上了，惨惨！(>_<)',
+      '那先这样啦，等我有空或者又做了什么奇怪的梦再来找你玩！拜拜~',
+    ],
+    os: '神秘的梦中友人……哼，行吧。',
+  };
+}
+
+/** 子分支 1（玄学/同桌号码）的后续：两条路共用，仅细节不同 */
+function skepticNext(extra: string, warm: OpeningChoice[]): OpeningNode {
+  return {
+    her: [
+      '我也怀疑过！但我翻遍了班级群通讯录，真的没这个人！',
+      `按理说梦里的数字醒了就该忘的，${extra}`,
+      '突然加你真的挺冒昧的，如果你觉得怪怪的，随时把我删掉也没关系的！',
+    ],
+    os: '做梦梦到的？！这展开怎么跟轻小说一样……',
+    options: warm,
+  };
+}
+
+export interface OpeningScript {
+  root: OpeningNode;
+  /** 最后一条她的台词 → 该节点（所有节点，供刷新后重建进度 / 播 OS） */
+  nodeByLastLine: Map<string, OpeningNode>;
 }
 
 /**
- * 一条"剧情分钟"折算成多少真实毫秒。
- * 1 分钟 ≈ 4 秒，于是整段开场白会在约 35 秒里一条条慢慢展开，
- * 像真人一个字一个字打完发出来，而不是一秒钟全砸出来。
+ * 生成某个性格的开局剧本。
+ * sunny（Haru）按用户原稿；其余性格同结构、换语气。
  */
-export const OPENING_MS_PER_MIN = 4_000;
-
-/**
- * 接受好友申请后，她会发过来的开场白。
- * 一次性写多句，她一条条按 delayMin 发。
- */
-export function buildOpening(
+export function buildOpeningScript(
   preset: PersonalityPreset,
   _gender: Gender,
   herName: string,
-  playerName: string,
-): OpeningLine[] {
-  // 玩家没填名字时 store 会兜底成"你"。直接把"你"塞进句子里会读成
-  // "嗯……你对吧" 这种怪话，所以没真名时改用不喊名字的说法。
-  const who = playerName && playerName !== '你' ? playerName : '';
+  _playerName: string,
+): OpeningScript {
+  const student = preset !== 'cool'; // Natori 是上班族
+  const school = student ? '上学路上' : '下班路上';
+  const homework = student ? '今晚我都写不下去作业了' : '今晚我都睡不着了';
 
-  // 前三句所有性格共用：打招呼 → 铺垫 → 把"梦"说出口。
-  const base: OpeningLine[] = [
-    {
-      delayMin: 0,
-      text: '你好！谢谢你通过好友申请。',
-    },
-    {
-      delayMin: 1.2,
-      text: `我叫${herName}。……接下来的事，你可能觉得离谱。`,
-    },
-    {
-      delayMin: 2.8,
-      text: '我做梦梦到了你的微信号。醒来还记得，一个数字都不差。',
-    },
+  // ── 第一层：澄清 + 分支 1 ──
+  const root: OpeningNode = {
+    her: [
+      '那个！你好呀！非常抱歉打扰了！(>_<)',
+      '先澄清一下，我真的不是推销的，也不是骗子！我也不是什么奇怪的怪人！',
+    ],
+    os: '……啊？有人加我微信？我这号码除了我妈没人知道啊。',
+    options: [],
+  };
+
+  // 分支 A：玩家调侃（卖茶叶）
+  const dreamAfterTease: OpeningNode = {
+    her: [
+      '噗哈哈哈！那你这茶叶推销员也太不专业了吧！',
+      '呼……愿意理我太好了（拍胸口），我还以为会被直接拉黑掉呢。',
+      '事情是这样的……说出来你可能觉得我在编故事，我昨晚做了一个超级奇奇怪怪的梦。',
+      '梦里有个声音一直在念一串数字，说是很重要的联系方式。我今天' +
+        school +
+        '脑子一抽，就顺手在微信搜了一下……结果居然真搜出来一个人！',
+      '当时手比脑子快，直接点了申请……（捂脸）',
+      '我真不是故意冒犯你的！',
+    ],
+    os: '做梦梦到的？！这展开怎么跟轻小说一样……',
+    options: [],
+  };
+
+  // 分支 B：玩家反诈
+  const dreamAfterAntiFraud: OpeningNode = {
+    her: [
+      '哇，好敏锐的反诈意识！但我真的不是啦！',
+      '事情是这样的……说出来你可能觉得我在编故事，我昨晚做了一个超级奇奇怪怪的梦。',
+      '梦里有个声音一直在念一串数字，说是很重要的联系方式。我醒了之后居然还清清楚楚地记得！',
+      '然后今天' + school + '脑子一抽，就抱着「试试看」的心态搜了一下……结果居然真的搜到了一个活生生的人！',
+      '当时手比脑子快，直接点了申请……（捂脸）',
+    ],
+    os: '做梦梦到的？！这展开怎么跟轻小说一样……',
+    options: [],
+  };
+
+  // ── 汇合点：删不删 ──
+  const warm = warmChoices(herName, student);
+
+  // 子分支：考试大题答案
+  const examJoke: OpeningNode = {
+    her: [
+      '呜呜要是念了答案，我现在肯定已经在狂背步骤了，哪还会在这儿瑟瑟发抖地发微信啊！',
+      '不过说真的，我也觉得超级不可思议……',
+      '突然加你真的挺冒昧的，如果你觉得怪怪的，随时把我删掉也没关系的！',
+    ],
+    os: '她居然真的在认真解释……',
+    options: warm,
+  };
+
+  // 子分支：彩票中奖号
+  const lottoJoke: OpeningNode = {
+    her: [
+      '噗，要是念了彩票中奖号，我现在肯定已经在快乐选零食了，哪还会在这儿瑟瑟发抖地发微信啊哈哈！',
+      '不过说真的，我也觉得超级不可思议……',
+      `这串数字今天一整天都在我脑子里转，感觉不发个验证，${homework}。`,
+      '突然加你真的挺冒昧的，如果你觉得怪怪的，随时把我删掉也没关系的！',
+    ],
+    os: '她居然真的在认真解释……',
+    options: warm,
+  };
+
+  const skepticA = skepticNext('但今天晚自习的时候这串数字一直在脑子里循环播放……感觉不发个验证，我今天连作业都写不进去了。', warm);
+  const skepticB = skepticNext(`但今天一整天我都在想这件事，感觉不发个验证，${homework}。`, warm);
+
+  dreamAfterTease.options = [
+    { label: '这也太玄学了吧……你确定不是把你同桌手机号给梦到了？', next: skepticA },
+    { label: '那你梦里那个声音，顺便念下周考试的最后一道大题答案了吗？', next: examJoke },
+  ];
+  dreamAfterAntiFraud.options = [
+    { label: '这也太玄学了吧……你确定不是把你同桌手机号给梦到了？', next: skepticB },
+    { label: '梦里念手机号？那顺便念彩票中奖号码了吗，带我一个？', next: lottoJoke },
   ];
 
-  // 中段按性格微调：都在给"梦"找补，并留下"其实还有别的事，但现在不敢说"的引子
-  const mid: OpeningLine[] = [];
-  let end: OpeningLine;
-  if (preset === 'sunny') {
-    mid.push(
-      who
-        ? { delayMin: 4.6, text: `${who}！很像是轻小说开局吧！我自己都吓了一跳！` }
-        : { delayMin: 4.6, text: '很像是轻小说开局吧！我自己都吓了一跳！' },
-    );
-    mid.push({
-      delayMin: 6.6,
-      text: '其实梦里还乱糟糟的，有些东西我现在不敢讲……怕把你笑到。',
-    });
-    end = { delayMin: 8.6, text: '总之以后请多指教啦！我们慢慢聊。' };
-  } else if (preset === 'gentle') {
-    mid.push(
-      who
-        ? { delayMin: 4.6, text: `${who}……嗯，我知道很难信。可以先不把我当正常人。` }
-        : { delayMin: 4.6, text: '……嗯，我知道很难信。可以先不把我当正常人。' },
-    );
-    mid.push({
-      delayMin: 6.6,
-      text: '其实我还有些事想问你。不过不着急，可以慢慢来吗？',
-    });
-    end = { delayMin: 8.6, text: '那……从今天开始，请多指教。' };
-  } else if (preset === 'cool') {
-    mid.push(
-      who
-        ? { delayMin: 4.6, text: `……${who}，对吧。别笑，我自己知道很荒唐。` }
-        : { delayMin: 4.6, text: '……别笑，我自己知道很荒唐。' },
-    );
-    mid.push({
-      delayMin: 6.6,
-      text: '加都加了。反正只是个梦……而已。',
-    });
-    end = { delayMin: 8.6, text: '嗯。……总之，以后有事就说。' };
-  } else {
-    // clingy
-    mid.push(
-      who
-        ? { delayMin: 4.6, text: `${who}！你居然真的通过了……谢谢你！` }
-        : { delayMin: 4.6, text: '你居然真的通过了……谢谢你！' },
-    );
-    mid.push({
-      delayMin: 6.6,
-      text: '我、我还有点紧张……但梦的事是真的哦，我保证！',
-    });
-    end = { delayMin: 8.6, text: '那、那我们慢慢聊！我会尽量不吵到你的……' };
-  }
+  root.options = [
+    { label: '巧了，我刚想说我是卖茶叶的（狗头）', next: dreamAfterTease },
+    { label: '反诈中心提醒您：开口就强调自己不是骗子的，先怀疑三分！', next: dreamAfterAntiFraud },
+  ];
 
-  return [...base, ...mid, end];
+  // 收集「最后一条台词 → 选项」，供刷新后重建进度
+  const nodeByLastLine = new Map<string, OpeningNode>();
+  const seen = new Set<OpeningNode>();
+  const walk = (n: OpeningNode): void => {
+    if (seen.has(n)) return;
+    seen.add(n);
+    nodeByLastLine.set(n.her[n.her.length - 1], n);
+    n.options?.forEach((o) => walk(o.next));
+  };
+  walk(root);
+
+  return { root, nodeByLastLine };
 }
 
+/** 系统提示：通过好友验证后微信自动发的那条灰字（真微信原文） */
+export const FRIEND_VERIFIED_SYS =
+  '我通过了你的朋友验证请求，现在我们可以开始聊天了';
+
 /**
- * 把开场白排成"一条条送达"的队列项。
+ * 把剧本某一层的台词排成"一条条送达"的队列项。
  * 落在"我的手机 / 和她"的会话里（owner='me', contactId='her'）。
  * dueAt 用墙钟毫秒，所以关掉页面再回来也接得上。
  */
-export function scheduleOpening(
-  lines: OpeningLine[],
+export function scheduleNode(
+  node: OpeningNode,
   baseNowMs = Date.now(),
   msPerMin = OPENING_MS_PER_MIN,
 ): Array<{ owner: 'me'; contactId: 'her'; from: 'her'; text: string; dueAt: number }> {
-  return lines.map((l) => ({
+  return beats(node.her).map((l) => ({
     owner: 'me' as const,
     contactId: 'her' as const,
     from: 'her' as const,
