@@ -107,12 +107,12 @@ export interface UI {
   setBubble(text: string): void;
   setBubbleHint(text: string): void;
   /** 玩家的内心独白（OS）：固定显示在顶部；big = 像标语一样大字强调一下 */
-  setOS(text: string, big?: boolean): void;
+  setNeixin(lines: string | string[], big?: boolean): void;
   /** 开局剧本的快捷回复（玩家的可选台词） */
   showOpeningChoices(labels: string[]): void;
   hideOpeningChoices(): void;
-  /** 玩家的内心独白（OS），不是她说的 */
-  setOS(text: string, big?: boolean): void;
+  /** 玩家的内心独白（不是她说的）；多条会依次播出 */
+  setNeixin(lines: string | string[], big?: boolean): void;
   /** 开局剧本的快捷回复（玩家的可选台词） */
   showOpeningChoices(labels: string[]): void;
   hideOpeningChoices(): void;
@@ -244,10 +244,11 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           <div class="think" id="ui-think" hidden><span></span><span></span><span></span></div>
         </div>
 
-        <!-- 玩家的内心独白（OS）：固定在顶部，和她的话明确区分 -->
-        <div class="os" id="ui-os" hidden>
-          <span class="os-tag">OS</span>
-          <span class="os-txt" id="ui-os-txt"></span>
+        <!-- 玩家的内心独白（内心）：固定在顶部的一条，和她的话明确区分 -->
+        <div class="neixin" id="ui-neixin" hidden>
+          <span class="cnr tl"></span><span class="cnr tr"></span><span class="cnr bl"></span><span class="cnr br"></span>
+          <span class="neixin-tag">内心</span>
+          <span class="neixin-txt" id="ui-neixin-txt"></span>
         </div>
 
         <div class="log" id="ui-log"></div>
@@ -486,8 +487,9 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
   let lastPresenceKey = '';
   /** 时间输入框被用户改过：改过就不要再被时钟回写覆盖，直到点"设定/同步" */
   let timeDirty = false;
-  /** 心声（OS）大字模式的自动缩回定时器 */
+  /** 内心（neixin）大字模式的自动缩回定时器 / 多条心里话的切换定时器 */
   let bigTimer: number | null = null;
+  let neixinTimer: number | null = null;
 
   // ── 选人界面 ────────────────────────────
   const roleList = $<HTMLDivElement>('role-list');
@@ -758,22 +760,31 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     },
 
     /**
-     * 玩家的内心独白（OS）——不是她说的，是"我"心里的话。
-     * 固定在顶部一条（和她的气泡、和日志都区分开）；big = 像标语一样
-     * 大字强调几秒，再缩回固定那条（开场心理要超级明显）。
+     * 玩家的内心独白——不是她说的，是"我"心里的话。
+     * 常驻在顶部一条；传多条时依次播出（像心事一层层浮上来）。
+     * big = 关键节拍的"标语时刻"：缓慢放大 + 呼吸光，4 秒后缓落回常驻大小。
      */
-    setOS(text: string, big = false) {
-      const box = $<HTMLDivElement>('ui-os');
-      const txt = $<HTMLSpanElement>('ui-os-txt');
-      if (txt.textContent === text && !big) return;
-      txt.textContent = text;
-      box.hidden = false;
-      box.classList.add('on');
-      box.classList.toggle('big', big);
+    setNeixin(lines: string | string[], big = false) {
+      const box = $<HTMLDivElement>('ui-neixin');
+      const txt = $<HTMLSpanElement>('ui-neixin-txt');
+      const list = Array.isArray(lines) ? lines : [lines];
+      if (!list.length) return;
+      if (neixinTimer) clearTimeout(neixinTimer);
       if (bigTimer) clearTimeout(bigTimer);
-      if (big) {
-        bigTimer = window.setTimeout(() => box.classList.remove('big'), 2800);
-      }
+      const show = (i: number): void => {
+        txt.textContent = list[i];
+        box.hidden = false;
+        box.classList.add('on');
+        box.classList.toggle('big', big && i === 0);
+        if (big && i === 0) {
+          bigTimer = window.setTimeout(() => box.classList.remove('big'), 4000);
+        }
+        // 还有下一条心里话 → 隔一会儿换上（読む速度感）
+        if (i + 1 < list.length) {
+          neixinTimer = window.setTimeout(() => show(i + 1), 2600);
+        }
+      };
+      show(0);
     },
 
     /** 开局剧本的快捷回复：显示在聊天输入栏上方（我手机的微信里） */
@@ -1304,6 +1315,8 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     let remarkId: string | null = null;
     let unreadReal = 0;
     let lastSig = '';
+    /** 已经播过逐字入场动画的那条消息 id（重绘不重放） */
+    let lastAnimatedId = '';
 
     const WX_TABS: WxPage[] = ['chats', 'contacts', 'discover', 'me'];
 
@@ -1624,6 +1637,14 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
         </div>`;
     }
 
+    /** 逐字浮出：英文单词不拆散，中文按字，空白原样。每个 token 一个延迟。 */
+    function staggerChars(text: string): string {
+      const tokens = text.match(/[A-Za-z0-9']+|\s+|[^\s]/gu) ?? [];
+      return tokens
+        .map((t, i) => `<span class="ch" style="animation-delay:${i * 26}ms">${escapeHtml(t)}</span>`)
+        .join('');
+    }
+
     function chatBody(save: SaveData, contactId: string): string {
       const { msgs, tOwner } = threadOf(save, contactId);
       const c = contactOf(save, contactId);
@@ -1657,14 +1678,19 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
             const ava = mine
               ? ''
               : `<span class="wx-mini">${avatarOf(save, m.from === 'owner' ? (owner === 'me' ? 'me' : 'her') : m.from)}</span>`;
+            // 动漫对话节奏：她的最新一条，气泡轻轻落定 + 文字逐字浮出。
+            // 只对"第一次见到"的那条做（记 id），重绘不重放；太长/图片不逐字。
+            const isLast = m === msgs[msgs.length - 1];
+            const fresh = !mine && isLast && !m.image && m.id !== lastAnimatedId && m.text.length <= 60;
+            if (fresh) lastAnimatedId = m.id;
             // 图片消息：跟真人微信一样是一张缩略图，点开可放大；它不是气泡文字
             const body = m.image
               ? `<span class="wx-bub wx-bub-img">
                   <img class="wx-img" src="${escapeHtml(m.image)}" alt="图片" data-zoom="${escapeHtml(m.image)}" />
                   ${m.text ? `<em class="wx-img-cap">${escapeHtml(m.text)}</em>` : ''}
                 </span>`
-              : `<span class="wx-bub">${escapeHtml(m.text)}</span>`;
-            return `<div class="wx-line ${mine ? 'mine' : ''}">${ava}${body}</div>`;
+              : `<span class="wx-bub">${fresh ? staggerChars(m.text) : escapeHtml(m.text)}</span>`;
+            return `<div class="wx-line ${mine ? 'mine' : ''}${fresh ? ' fresh' : ''}">${ava}${body}</div>`;
           })
           .join('') +
         typing
