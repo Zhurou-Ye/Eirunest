@@ -31,7 +31,7 @@ export const AFFINITY_DELTA_MAX = 6;
  * false → 回到剧本原值 50 / 150 / 350 / 700。
  * 上线前记得改成 false。
  */
-export const DEBUG_STORY = true;
+export const DEBUG_STORY = false;
 
 /**
  * 剧本原值（用户给的四个节点）。
