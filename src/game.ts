@@ -203,8 +203,8 @@ export class Game {
           const node = this.openingScript.root;
           this.store.scheduleMsgs(scheduleNode(node));
           if (node.os) {
-            this.lastOsText = node.os;
-            this.ui.setOS(node.os, true);
+            this.lastOsText = Array.isArray(node.os) ? node.os.join('|') : node.os;
+            this.ui.setNeixin(node.os, true);
           }
           this.ui.addLog('她好像发了几条消息过来……');
         }
@@ -383,7 +383,7 @@ export class Game {
     this.store.ensureProfileIntro();
     this.store.save();
     // 心声：玩家看到好友申请时的内心戏（心理弹幕，不是她说的）
-    this.ui.setOS('……啊？有人加我微信？我这号码除了我妈没人知道啊。', true);
+    
     // 玩家开机看到的提示
     this.ui.addLog('你的微信收到了一条好友申请……');
     this.ui.openNewGameContacts();
@@ -1184,11 +1184,14 @@ export class Game {
       return;
     }
 
-    // OS：每个节点最后一条台词送达时，播该节点的心里话
+    // 内心：每个节点最后一条台词送达时，播该节点的心里话
     const node = this.openingNodeByLastLine(lastHer.text);
-    if (node?.os && node.os !== this.lastOsText) {
-      this.lastOsText = node.os;
-      this.ui.setOS(node.os, true);
+    if (node?.os) {
+      const osKey = Array.isArray(node.os) ? node.os.join('|') : node.os;
+      if (osKey !== this.lastOsText) {
+        this.lastOsText = osKey;
+        this.ui.setNeixin(node.os, true);
+      }
     }
     // 到选择点了 → 弹快捷回复
     if (node?.options?.length) {
