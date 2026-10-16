@@ -210,37 +210,110 @@ body {
   animation-delay: 0.3s;
 }
 
-/* 玩家的内心独白（心理弹幕）：右上、虚线框、斜体——和她的气泡明确区分 */
-.inner-voice {
+/* 玩家的内心独白（OS）：固定在顶部的一条，和她的气泡、日志都区分开。
+   big = 像标语一样大字强调（开场心理要超级明显），几秒后缩回固定条。 */
+.os {
   position: absolute;
-  right: 14px;
-  top: calc(var(--safe-top) + 68px);
-  z-index: 3;
+  left: 12px;
+  right: 12px;
+  top: calc(var(--safe-top) + 56px);
+  z-index: 6;
   display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  max-width: min(238px, 58vw);
-  padding: 8px 12px;
-  border-radius: 14px;
+  align-items: baseline;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: 12px;
   border: 1px dashed rgba(255, 208, 138, 0.5);
-  background: rgba(40, 31, 21, 0.9);
+  background: rgba(40, 31, 21, 0.88);
   color: #f2d7a4;
-  font-size: 12.5px;
-  line-height: 1.65;
-  font-style: italic;
   opacity: 0;
   transform: translateY(-4px);
-  transition: opacity 0.25s var(--ease), transform 0.25s var(--ease);
+  transition: opacity 0.25s var(--ease), transform 0.25s var(--ease), font-size 0.25s var(--ease);
   pointer-events: none;
 }
 
-.inner-voice.on {
+.os.on {
   opacity: 1;
   transform: translateY(0);
 }
 
-.inner-voice i {
+.os-tag {
+  flex: none;
+  font-size: 10px;
   font-style: normal;
+  letter-spacing: 0.08em;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(255, 208, 138, 0.18);
+  border: 1px solid rgba(255, 208, 138, 0.4);
+  color: #ffd98a;
+}
+
+.os-txt {
+  font-size: 13px;
+  line-height: 1.6;
+  font-style: italic;
+}
+
+/* 大字模式：开场等关键节拍，像标语一样压过去 */
+.os.big {
+  padding: 12px 16px;
+  background: rgba(30, 23, 15, 0.94);
+  border-style: solid;
+  border-color: rgba(255, 208, 138, 0.75);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+}
+
+.os.big .os-txt {
+  font-size: 19px;
+  line-height: 1.5;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.os.big .os-tag {
+  font-size: 11px;
+}
+
+/* 微信里的系统提示（好友验证通过那种居中灰字） */
+.wx-sys {
+  margin: 10px 24px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ink-faint);
+}
+
+/* 开局剧本的快捷回复：玩家的可选台词，挂在输入栏上方 */
+.wx-quick {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 2px;
+}
+
+.wx-quick[hidden] {
+  display: none;
+}
+
+.wx-quick-btn {
+  text-align: left;
+  font-size: 12.5px;
+  line-height: 1.5;
+  padding: 9px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 208, 138, 0.45);
+  background: rgba(255, 208, 138, 0.1);
+  color: #f5e3bd;
+  cursor: pointer;
+}
+
+.wx-quick-btn:hover {
+  background: rgba(255, 208, 138, 0.2);
+}
+
+.wx-quick-btn:active {
+  transform: scale(0.99);
 }
 
 @keyframes bounce {
@@ -260,7 +333,8 @@ body {
 .log {
   position: absolute;
   left: 16px;
-  top: calc(var(--safe-top) + 76px);
+  top: calc(var(--safe-top) + 100px);
+  z-index: 5; /* 压在手机面板的蒙版之上（否则日志被 blur+压暗看不清），但低于 OS 栏 */
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -1292,7 +1366,7 @@ body {
 .away-note {
   position: absolute;
   left: 50%;
-  top: calc(var(--safe-top) + 70px);
+  top: calc(var(--safe-top) + 100px);
   transform: translateX(-50%);
   z-index: 3;
   display: flex;
