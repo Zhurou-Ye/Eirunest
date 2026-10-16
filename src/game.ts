@@ -41,7 +41,13 @@ import { AFFINITY_MAX } from './core/story';
 import { WITCH_ID, situationFor, type NpcSituation } from './core/npc';
 import { applyProfile, getProfile, DEFAULT_PROFILE_ID, PROFILES } from './core/profile';
 import type { CharacterProfile } from './core/profile';
-import { buildOpening, scheduleOpening } from './core/opening';
+import {
+  buildOpeningScript,
+  scheduleNode,
+  FRIEND_VERIFIED_SYS,
+  type OpeningScript,
+  type OpeningNode,
+} from './core/opening';
 import { loadConfig, requestDiary, requestMomentComment, requestNpcLine, requestReply, saveConfig, cloudConfigured, type LlmConfig } from './ai/client';
 import { reconcileAction, resolveMood } from './ai/mapping';
 import { idleGossip, timeGlance } from './ai/offline';
@@ -105,8 +111,12 @@ export class Game {
   private _pendingProactiveAt = 0;
   /** 玩家最近一次回她话的真实时刻 */
   private lastPlayerReplyAt = 0;
-  /** 阶段 0 沉默催促：下次可催的真实时间戳 */
-  private _nextNudgeAt = 0;
+  /** 开局分支剧本（当前性格的那棵剧本树；刷新后用聊天记录重建进度） */
+  private openingScript: OpeningScript | null = null;
+  /** 玩家跳过剧本直接打字聊 → 放弃剩余台词，交给模型 */
+  private openingAbandoned = false;
+  /** 已经播过的 OS（心里话），避免同一条反复刷 */
+  private lastOsText = '';
   /**
    * 世界是否已"连上"（阶段 ≥ 1）：决定她的立绘与她的日常是否可见。
    * 初值必须是 null 而不是 false —— 否则开局就是 false，跟阶段 0 的 false 判等，
@@ -184,19 +194,22 @@ export class Game {
         if (remark) this.store.setContactRemark(id, remark);
         const displayName = remark || p.name;
         this.ui.addLog(`你把「${displayName}」加进了通讯录。`);
-        // 如果是开局的好友申请，注入固定开场白（不耗 token）
+        // 如果是开局的好友申请：先落微信那条系统提示，再播分支剧本第一层
         if (wasOpening) {
-          const lines = buildOpening(
-            this.store.state.character.personality.preset,
-            this.store.state.character.personality.gender,
-            this.store.state.character.personality.name,
-            this.store.state.playerName,
-          );
-          // 不一次性塞进会话！排好队，每隔几秒送一条进来（像她真的在打字）
-          this.store.scheduleMsgs(scheduleOpening(lines));
-          this.ui.addLog(`${this.charPronoun()}发了几条消息过来……`);
+          this.openingAbandoned = false;
+          this.openingScript = this.buildOpening();
+          // 真微信通过验证后聊天里的第一条就是这条灰字（不是她说的）
+          this.store.addChatMsg('me', 'her', 'sys', FRIEND_VERIFIED_SYS, false);
+          const node = this.openingScript.root;
+          this.store.scheduleMsgs(scheduleNode(node));
+          if (node.os) {
+            this.lastOsText = node.os;
+            this.ui.setOS(node.os, true);
+          }
+          this.ui.addLog('她好像发了几条消息过来……');
         }
       },
+      onOpeningPick: (label) => this.pickOpeningChoice(label),
       onShoot: (placeId) => this.shoot(placeId),
       onBuyPhysical: () => {
         const ok = this.store.buyPhysical();
@@ -327,6 +340,8 @@ export class Game {
       // 换人之后重新打声招呼，让新性格立刻被感知到
       this.ui.setBubbleHint(`${next.name}：${next.tagline}`);
       this.ui.addLog(`换成了 ${next.name}。${pronoun(next.gender)}有自己的记忆，从这里开始。`);
+      // 剧本语气跟着人走（刷新后 tickOpening 也会懒重建，这里主动换）
+      this.openingScript = this.buildOpening();
       // 新角色如果还没有属于自己的记忆，补一条初遇；否则沿用 TA 自己攒下的记忆（不串别人）
       this.store.ensureProfileIntro();
       this.store.pushTimeline(`立绘切换为 ${next.name}`);
@@ -353,8 +368,10 @@ export class Game {
     // tone / shyThreshold / initiative / speechRate 全是 undefined（查表查不到）。
     this.store.startNewGame(profile.personality.preset, profile.name);
     this.store.setPlayer(playerName, playerGender);
-    // 重置开局相关的运行时状态（催促节流、排期队列）
-    this._nextNudgeAt = 0;
+    // 重置开局相关的运行时状态（排期队列、剧本进度）
+    this.openingScript = null;
+    this.openingAbandoned = false;
+    this.lastOsText = '';
     this.store.clearPendingMsgs();
     this.ui.setPlayerName(this.store.state.playerName);
     await this.switchProfile(id);
@@ -366,7 +383,7 @@ export class Game {
     this.store.ensureProfileIntro();
     this.store.save();
     // 心声：玩家看到好友申请时的内心戏（心理弹幕，不是她说的）
-    this.ui.setInnerVoice('……啊？有人加我微信？我这号码除了我妈没人知道啊。');
+    this.ui.setOS('……啊？有人加我微信？我这号码除了我妈没人知道啊。', true);
     // 玩家开机看到的提示
     this.ui.addLog('你的微信收到了一条好友申请……');
     this.ui.openNewGameContacts();
@@ -933,7 +950,10 @@ export class Game {
     // 排期消息送达：开场白那种固定对话，到点了才一条条进会话（不耗 token）
     this.tickPendingMsgs();
 
-    // 阶段 0 的沉默催促：她开过口却等不到回信，过一会儿会主动问一句
+    // 开局剧本推进：台词送达 → 弹快捷回复 / 播 OS
+    this.tickOpening();
+
+    // 阶段 0 的沉默催促：她道别后等不到回信，隔一阵子主动问一句
     this.tickOpeningNudge(now);
 
     requestAnimationFrame(this.loop);
@@ -1124,14 +1144,83 @@ export class Game {
 
   /** 开场沉默催促的固定台词（也用作"是否已催过"的判据，写死别改） */
   private static readonly NUDGE_LINES = ['……在吗？', '那个……你还在吗？'];
+  /** 催促节奏：她最后一条消息发出去之后，隔多久催一次（真实毫秒） */
+  private static readonly NUDGE_DELAYS = [180_000, 300_000, 600_000];
+
+  /** 按当前性格重建剧本树（换立绘=换人，剧本语气也跟着换） */
+  private buildOpening(): OpeningScript {
+    const c = this.store.state.character;
+    return buildOpeningScript(c.personality.preset, c.personality.gender, c.personality.name, this.store.state.playerName);
+  }
 
   /**
-   * 阶段 0 的沉默催促：
-   * 她接受了好友、发完开场白后，如果玩家一直不回，她会（隔一阵子）
-   * 主动问一句"……在吗？"。让开局不是干等她开口，而是有"活人感"。
-   *
-   * 判定完全基于存档（阶段 0 + 已通过申请 + 玩家没开口 + 还没催够），
+   * 开局剧本的推进（每 tick）：
+   * 1. 她某一层的台词全部送达后，如果该层有选项 → 弹出快捷回复；
+   * 2. 节点自带的 OS（玩家心里话）跟着播一遍（大字）。
+   * 判定全部基于存档（阶段 0 + 已通过申请 + 队列空 + 最后一条她的台词能定位节点），
    * 所以刷新页面也接得上，不依赖运行时标记。
+   */
+  private tickOpening(): void {
+    if (this.openingAbandoned) return;
+    const st = this.store.state;
+    if (st.story.phase !== 0) return;
+    const op = st.metPeople.find((p) => p.id === 'her-opening');
+    if (!op || !op.added) return; // 还没通过好友申请
+    if (!this.openingScript) this.openingScript = this.buildOpening();
+    if (this.store.pendingHerCount() > 0) return; // 她还在打字，等这层发完
+
+    const th = st.threads.find(
+      (t) => t.owner === 'me' && t.contactId === 'her' && t.profileId === st.profileId,
+    );
+    const msgs = th?.msgs ?? [];
+    const lastHer = [...msgs].reverse().find((m) => m.from === 'her');
+    if (!lastHer) return;
+
+    // 玩家跳过剧本自己打字聊过 → 放弃剧本（onSend 也会清，这里管刷新后的情况）
+    const lastAny = msgs[msgs.length - 1];
+    if (lastAny && lastAny.from !== 'her' && lastAny.from !== 'sys') {
+      this.openingAbandoned = true;
+      this.ui.hideOpeningChoices();
+      return;
+    }
+
+    // OS：每个节点最后一条台词送达时，播该节点的心里话
+    const node = this.openingNodeByLastLine(lastHer.text);
+    if (node?.os && node.os !== this.lastOsText) {
+      this.lastOsText = node.os;
+      this.ui.setOS(node.os, true);
+    }
+    // 到选择点了 → 弹快捷回复
+    if (node?.options?.length) {
+      this.ui.showOpeningChoices(node.options.map((o) => o.label));
+    }
+  }
+
+  /** 最后一条台词 → 节点（刷新后重建进度用） */
+  private openingNodeByLastLine(text: string): OpeningNode | null {
+    return this.openingScript?.nodeByLastLine.get(text) ?? null;
+  }
+
+  /** 玩家从快捷回复里选了一句 → 发出去，接着播下一层 */
+  private pickOpeningChoice(label: string): void {
+    const st = this.store.state;
+    const th = st.threads.find(
+      (t) => t.owner === 'me' && t.contactId === 'her' && t.profileId === st.profileId,
+    );
+    const lastHer = (th?.msgs ?? []).filter((m) => m.from === 'her').slice(-1)[0];
+    const node = lastHer ? this.openingNodeByLastLine(lastHer.text) : null;
+    const choice = node?.options?.find((o) => o.label === label);
+    this.ui.hideOpeningChoices();
+    if (!choice) return;
+    this.store.addChatMsg('me', 'her', 'owner', label, false);
+    this.store.scheduleMsgs(scheduleNode(choice.next));
+    if (choice.next.os) this.lastOsText = ''; // 让下一层 OS 能播
+  }
+
+  /**
+   * 阶段 0 的沉默催促：她道别之后玩家一直不回，隔一阵子主动问一句"……在吗？"。
+   * 节奏按**她最后一条消息的真实时间戳**算（存档里查得到），刷新也接得上；
+   * 间隔放得比较长——催太紧会显得烦人。
    */
   private tickOpeningNudge(now: number): void {
     const st = this.store.state;
@@ -1143,23 +1232,20 @@ export class Game {
     );
     const msgs = th?.msgs ?? [];
     if (msgs.some((m) => m.from === 'me')) return; // 玩家已经开口，不催
-    const sent = msgs.filter(
-      (m) => m.from === 'her' && Game.NUDGE_LINES.includes(m.text),
-    ).length;
+    const hers = msgs.filter((m) => m.from === 'her');
+    if (!hers.length) return;
+    // 剧本还没播完（还在等选择）不催——那会儿她正等着玩家接话呢
+    if (!this.openingAbandoned && this.openingScript) {
+      const node = this.openingNodeByLastLine(hers[hers.length - 1].text);
+      if (node?.options?.length) return;
+    }
+    if (this.store.pendingHerCount() > 0) return; // 她还在打字
+    const sent = hers.filter((m) => Game.NUDGE_LINES.includes(m.text)).length;
     if (sent >= Game.NUDGE_LINES.length) return;
+    const lastAt = hers[hers.length - 1].at;
+    const delay = Game.NUDGE_DELAYS[Math.min(sent, Game.NUDGE_DELAYS.length - 1)];
+    if (now - lastAt < delay) return;
 
-    // 等开场白全部送达之后再等一会儿才催
-    if (this.store.pendingHerCount() > 0) {
-      this._nextNudgeAt = now + 20; // 她还在打字，20 秒后再看
-      return;
-    }
-    if (this._nextNudgeAt === 0) {
-      this._nextNudgeAt = now + 40; // 开场白发完后再等 40 秒
-      return;
-    }
-    if (now < this._nextNudgeAt) return;
-
-    this._nextNudgeAt = 0;
     this.store.addChatMsg('me', 'her', 'her', Game.NUDGE_LINES[sent], true);
     this.ui.addLog(`${st.character.personality.name}又发来一条。`);
   }
@@ -1491,6 +1577,19 @@ export class Game {
   private async sendToModel(text: string): Promise<void> {
     const clean = text.trim();
     if (!clean || this.pendingReply) return;
+    // 开局剧本进行中玩家直接打字 = 跳过剧本：撤掉还没播的台词，
+    // 否则她的固定台词会和模型的回复撞成"精分"。
+    if (!this.openingAbandoned && this.store.state.story.phase === 0) {
+      const op = this.store.state.metPeople.find((p) => p.id === 'her-opening');
+      if (op?.added && this.store.pendingHerCount() > 0) {
+        this.openingAbandoned = true;
+        this.store.clearPendingMsgs();
+        this.ui.hideOpeningChoices();
+      } else if (op?.added) {
+        this.openingAbandoned = true;
+        this.ui.hideOpeningChoices();
+      }
+    }
     this.pendingReply = true;
     this.ui.setThinking(true);
     this.ui.pushTurn({ role: 'user', text: clean, iso: new Date().toISOString() });
