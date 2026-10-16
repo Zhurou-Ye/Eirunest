@@ -87,7 +87,6 @@ export type PanelName =
   | 'status'
   | 'touch'
   | 'gift'
-  | 'memory'
   | 'shop'
   | 'map'
   | 'phone'
@@ -105,6 +104,8 @@ export interface PresenceInfo {
 export interface UI {
   setBubble(text: string): void;
   setBubbleHint(text: string): void;
+  /** 玩家的内心独白（心理弹幕），不是她说的 */
+  setInnerVoice(text: string, durationMs?: number): void;
   setThinking(v: boolean): void;
   setModelStatus(text: string, offline: boolean): void;
   setLatency(ms: number, usedModel: boolean): void;
@@ -179,6 +180,26 @@ const TOUCH_ITEMS: { kind: TouchKind; label: string; hint: string }[] = [
   { kind: 'torso', label: '靠一会儿', hint: '安静地待着' },
 ];
 
+/**
+ * 一开始用不上的功能一律锁着（置灰 + 🔒），点了给提示、不开空面板。
+ * 解锁节奏跟着剧情走：
+ *   - 她的手机 / 地图 / 商城：阶段 >= 1（你能看见她的世界）之后
+ *   - 互动 / 送礼：买到实体（她真的来到你身边）之后
+ */
+const LOCKED_PANELS: PanelName[] = ['phone', 'map', 'shop', 'touch', 'gift'];
+
+function panelLockHint(name: PanelName, save: SaveData | null): string | null {
+  const phase = save?.story?.phase ?? 0;
+  const hasPhysical = save?.story?.hasPhysical ?? false;
+  if (name === 'phone' || name === 'map' || name === 'shop') {
+    if (phase < 1) return '能看见她的世界之后，这里才打得的开。';
+  }
+  if (name === 'touch' || name === 'gift') {
+    if (!hasPhysical) return '还碰不到她……羁绊再往前走走。';
+  }
+  return null;
+}
+
 export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
   root.innerHTML = `
     <div class="stage">
@@ -212,6 +233,9 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           <div class="think" id="ui-think" hidden><span></span><span></span><span></span></div>
         </div>
 
+        <!-- 玩家的内心独白（心理弹幕）：不是她说的，是"我"心里的话 -->
+        <div class="inner-voice" id="ui-inner" hidden><i>💭</i><span id="ui-inner-txt"></span></div>
+
         <div class="log" id="ui-log"></div>
 
         <button class="menu-toggle" id="btn-menu" aria-label="菜单">
@@ -227,10 +251,6 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
           <button class="drawer-item" data-panel="status">
             <svg viewBox="0 0 24 24"><path d="M12 4a8 8 0 1 0 8 8h-2a6 6 0 1 1-6-6z" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="2.4" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
             <span>状态</span>
-          </button>
-          <button class="drawer-item" data-panel="memory">
-            <svg viewBox="0 0 24 24"><path d="M7 4h9a2 2 0 0 1 2 2v13a1 1 0 0 1-1.6.8L12 17l-4.4 2.8A1 1 0 0 1 6 19V6a2 2 0 0 1 1-2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
-            <span>记忆</span>
           </button>
           <button class="drawer-item" data-panel="touch">
             <svg viewBox="0 0 24 24"><path d="M9 11V5.5a1.5 1.5 0 0 1 3 0V11m0 0V4.5a1.5 1.5 0 0 1 3 0V11m0 0V6.5a1.5 1.5 0 0 1 3 0V15a6 6 0 0 1-6 6h-1a6 6 0 0 1-6-6v-3a1.5 1.5 0 0 1 3 0" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -286,6 +306,10 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
             <div class="env" id="story-progress"></div>
             <div class="env" id="trait-panel"></div>
             <div class="env">
+              <span class="env-label" id="memory-label">TA 记得的事</span>
+              <ul id="ui-memories" class="mem-list"></ul>
+            </div>
+            <div class="env">
               <span class="env-label">房间</span>
               <div class="env-btns">
                 <button class="chip" id="btn-lamp">台灯</button>
@@ -339,14 +363,6 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
                 </button>`,
               ).join('')}
             </div>
-          </div>
-        </div>
-
-        <div class="panel" data-panel="memory" hidden>
-          <div class="panel-card">
-            <div class="panel-head"><h3 id="memory-title">TA 记得的事</h3><button class="x" data-close aria-label="关闭">×</button></div>
-            <p class="tip">越重要的事，记得越牢。这里只放 TA 自己的记忆，不掺别人。</p>
-            <ul id="ui-memories" class="mem-list"></ul>
           </div>
         </div>
 
@@ -440,6 +456,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
   let lastShopKey = '';
   let lastStoryKey = '';
   let lastTraitKey = '';
+  let lastMemKey = '';
   let lastCoins = -1;
   let lastGender = '';
 
@@ -455,8 +472,8 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
   let lastPresenceKey = '';
   /** 时间输入框被用户改过：改过就不要再被时钟回写覆盖，直到点"设定/同步" */
   let timeDirty = false;
-  /** "她的手机"是否已锁（阶段 0 打不开），只在变化时改 DOM */
-  let herPhoneLocked: boolean | null = null;
+  /** 心声（心理弹幕）的自动消失定时器 */
+  let innerVoiceTimer: number | null = null;
 
   // ── 选人界面 ────────────────────────────
   const roleList = $<HTMLDivElement>('role-list');
@@ -673,10 +690,13 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
     },
 
     openPanel(name: PanelName | null) {
-      // 阶段 0 你还看不见她的世界，也就打不开"她的手机"——只有自己这部
-      if (name === 'phone' && (lastSave?.story?.phase ?? 0) < 1) {
-        this.setBubbleHint(`还看不见${tp()}的手机……`);
-        return;
+      // 锁着的面板不开：给一句提示（她的气泡），别开个空面板让人以为坏了
+      if (name) {
+        const lock = panelLockHint(name, lastSave);
+        if (lock) {
+          this.setBubbleHint(lock);
+          return;
+        }
       }
       open = name;
       root.querySelectorAll<HTMLElement>('.panel[data-panel]').forEach((p) => {
@@ -686,10 +706,11 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
         b.classList.toggle('on', b.dataset.panel === name);
       });
       if (name === 'chat') input.focus();
-      if (name === 'memory' && lastSave) renderMemories(lastSave);
       if (name === 'status' && lastSave) {
         renderStoryProgress(lastSave);
         renderTraits(lastSave);
+        lastMemKey = '';
+        renderMemories(lastSave);
       }
       if (name === 'shop' && lastSave) {
         lastShopKey = '';
@@ -720,6 +741,25 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       this.setBubble(text);
       if (hintTimer) clearTimeout(hintTimer);
       hintTimer = window.setTimeout(() => this.setBubble(''), 3600);
+    },
+
+    /**
+     * 玩家的内心独白（心理弹幕）——不是她说的，是"我"心里的话。
+     * 样式上和她的气泡明确区分（右上、💭、虚线框），避免读者搞混说话人。
+     */
+    setInnerVoice(text: string, durationMs = 5200) {
+      const box = $<HTMLDivElement>('ui-inner');
+      const txt = $<HTMLSpanElement>('ui-inner-txt');
+      txt.textContent = text;
+      box.hidden = false;
+      box.classList.add('on');
+      if (innerVoiceTimer) clearTimeout(innerVoiceTimer);
+      innerVoiceTimer = window.setTimeout(() => {
+        box.classList.remove('on');
+        window.setTimeout(() => {
+          box.hidden = true;
+        }, 300);
+      }, durationMs);
     },
 
     setThinking(v: boolean) {
@@ -845,7 +885,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
         lastGender = c.personality.gender;
         const t = pronoun(c.personality.gender);
         $<HTMLElement>('status-title').textContent = `${t}的状态`;
-        $<HTMLElement>('memory-title').textContent = `${t}记得的事`;
+        $<HTMLElement>('memory-label').textContent = `${t}记得的事`;
         // 抽屉里的入口标签也要跟着走，否则男性角色会显示"她的手机"
         const phoneLabel = document.getElementById('drawer-phone-label');
         if (phoneLabel) phoneLabel.textContent = `${t}的手机`;
@@ -885,14 +925,16 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       if (open === 'phone') phones.her.refresh(save);
       else if (open === 'myphone') phones.me.refresh(save);
 
-      // 阶段 0 时"她的手机"是锁着的：你还看不见她的世界（只在变化时动 DOM）
-      const herLocked = (save.story?.phase ?? 0) < 1;
-      if (herLocked !== herPhoneLocked) {
-        herPhoneLocked = herLocked;
-        const btn = root.querySelector<HTMLElement>('.drawer-item[data-panel="phone"]');
-        if (btn) {
-          btn.classList.toggle('locked', herLocked);
-          btn.title = herLocked ? '关系进展达到阶段要求后，就能看见对方的手机了' : '';
+      // 功能锁：阶段 0 看不见她的世界 → 地图/商城锁着；没破壁 → 互动/送礼锁着。
+      // 她的手机同理由 phase < 1 锁（原有逻辑并进来统一管理）。
+      // 锁着不是摆设：抽屉里置灰 + 🔒，点了只给一句提示，不开空面板。
+      for (const name of LOCKED_PANELS) {
+        const locked = panelLockHint(name, save) !== null;
+        const btn = root.querySelector<HTMLElement>(`.drawer-item[data-panel="${name}"]`);
+        if (!btn) continue;
+        if (btn.classList.contains('locked') !== locked) {
+          btn.classList.toggle('locked', locked);
+          btn.title = locked ? (panelLockHint(name, save) ?? '') : '';
         }
       }
       // 金币显示
@@ -905,6 +947,7 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       if (open === 'status') {
         renderStoryProgress(save);
         renderTraits(save);
+        renderMemories(save);
       }
       // 商城打开时，状态变了才重绘（避免每帧重建 DOM）
       if (open === 'shop') {
@@ -963,9 +1006,11 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
       if (key === lastPresenceKey) return;
       lastPresenceKey = key;
 
-      // 出门提示
-      awayNote.hidden = !p.away;
-      if (p.away) {
+      // 出门提示：阶段 0 隔着两个世界，她去哪不该知道（那要从她手机里看）。
+      // 阶段 >= 1 能看见她的世界之后，才显示"她出门了 / 在哪儿"。
+      const worldLinked = (lastSave?.story?.phase ?? 0) >= 1;
+      awayNote.hidden = !p.away || !worldLinked;
+      if (p.away && worldLinked) {
         $<HTMLElement>('away-emoji').textContent = p.emoji;
         $<HTMLElement>('away-title').textContent = `${p.line}`;
         $<HTMLElement>('away-sub').textContent = `在 ${p.placeName}`;
@@ -981,8 +1026,11 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
   };
 
   function renderMemories(save: SaveData): void {
+    const items = [...memoriesFor(save)].sort((a, b) => b.weight - a.weight).slice(0, 6);
+    const key = items.map((m) => `${m.weight}:${m.summary}`).join('|');
+    if (key === lastMemKey) return;
+    lastMemKey = key;
     const ul = $<HTMLUListElement>('ui-memories');
-    const items = [...memoriesFor(save)].sort((a, b) => b.weight - a.weight).slice(0, 12);
     ul.innerHTML = items.map((m) => `<li>${m.summary}</li>`).join('') || '<li class="empty">还没有</li>';
   }
 
@@ -1404,7 +1452,9 @@ export function mountUI(root: HTMLElement, cb: UICallbacks): UI {
 
     function contactsBody(save: SaveData): string {
       const added = contactsOf(save);
-      const pending = save.metPeople.filter((p) => !p.added && p.id !== 'her-opening');
+      // 红点要数上开局那条好友申请（her-opening）——不然"新的朋友"里躺着
+      // 一条申请，旁边却没红点，玩家根本不知道该点哪里。
+      const pending = save.metPeople.filter((p) => !p.added);
       const st = myStatusOf(save);
       return `<div class="wx-list">
           <button class="wx-row" data-go="newfriends">
