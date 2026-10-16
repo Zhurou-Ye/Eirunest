@@ -365,8 +365,8 @@ export class Game {
     });
     this.store.ensureProfileIntro();
     this.store.save();
-    // 字幕：玩家看到好友申请的内心戏
-    this.ui.setBubbleHint('什么？居然有人加我好友……');
+    // 心声：玩家看到好友申请时的内心戏（心理弹幕，不是她说的）
+    this.ui.setInnerVoice('……啊？有人加我微信？我这号码除了我妈没人知道啊。');
     // 玩家开机看到的提示
     this.ui.addLog('你的微信收到了一条好友申请……');
     this.ui.openNewGameContacts();
@@ -524,6 +524,10 @@ export class Game {
     const weekday = new Date().getDay();
     const day = Math.floor(save.clock / 24);
 
+    // 世界是否已"连上"：阶段 0 时玩家只看得到手机，看不见她那边发生的事，
+    // 也看不见她的身影（立绘）。觉醒（阶段 1）之后才慢慢展开。
+    const worldLinked = (save.story?.phase ?? 0) >= 1;
+
     // 换天 / 换人 → 重新决定今天的安排
     if (!save.herPlan || save.herPlan.day !== day || save.herPlan.profileId !== this.profile.id) {
       const blocks = buildHerPlan({
@@ -540,8 +544,12 @@ export class Game {
       this.herPlanBlocks = blocks;
       this.store.setHerPlan({ day, profileId: this.profile.id, blocks });
       this.ensureChats();
-      const t = pronoun(this.profile.gender);
-      this.ui.addLog(`${t}今天决定：${describePlan(blocks)}`);
+      // 她的日程只有"能看见她的世界"之后才报给你——阶段 0 是隔屏联系，
+      // 她的行踪只能从她手机里的日程 app 看（她的手机也还没解锁）。
+      if (worldLinked) {
+        const t = pronoun(this.profile.gender);
+        this.ui.addLog(`${t}今天决定：${describePlan(blocks)}`);
+      }
     } else {
       this.herPlanBlocks = save.herPlan.blocks;
     }
@@ -550,9 +558,6 @@ export class Game {
     const place = block?.placeId ?? 'home';
     const line = block && block.kind !== 'rest' ? block.label : '';
 
-    // 世界是否已"连上"：阶段 0 时玩家只看得到手机，看不见她那边发生的事，
-    // 也看不见她的身影（立绘）。觉醒（阶段 1）之后才慢慢展开。
-    const worldLinked = (save.story?.phase ?? 0) >= 1;
     if (worldLinked !== this._worldLinked) {
       this._worldLinked = worldLinked;
       this.setCharacterVisible(worldLinked && this.herPlaceId === 'home');
