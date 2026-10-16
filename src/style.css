@@ -210,9 +210,12 @@ body {
   animation-delay: 0.3s;
 }
 
-/* 玩家的内心独白（OS）：固定在顶部的一条，和她的气泡、日志都区分开。
-   big = 像标语一样大字强调（开场心理要超级明显），几秒后缩回固定条。 */
-.os {
+/* 玩家的内心独白（内心）：固定在顶部的一条。
+   视觉小说式的精致做法——半透明深色 panel + 1px 低透明细边 + 四角 L 形装饰线
+   （"画框感"）+ 毛玻璃 + 衬线斜体。和她的话、和日志都明确区分。
+   .big = 关键节拍的"标语时刻"：缓慢呼吸式放大（0.6s 缓入缓出，不闪切），
+   期间有一层很轻的呼吸光；时间到再缓慢落回常驻大小。 */
+.neixin {
   position: absolute;
   left: 12px;
   right: 12px;
@@ -220,59 +223,124 @@ body {
   z-index: 6;
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  padding: 7px 12px;
-  border-radius: 12px;
-  border: 1px dashed rgba(255, 208, 138, 0.5);
-  background: rgba(40, 31, 21, 0.88);
-  color: #f2d7a4;
+  gap: 9px;
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 208, 138, 0.26);
+  background: rgba(30, 23, 16, 0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: 0 6px 28px rgba(0, 0, 0, 0.32);
   opacity: 0;
   transform: translateY(-4px);
-  transition: opacity 0.25s var(--ease), transform 0.25s var(--ease), font-size 0.25s var(--ease);
+  transition:
+    opacity 0.45s var(--ease),
+    transform 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    padding 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    font-size 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.6s var(--ease),
+    background 0.6s var(--ease);
   pointer-events: none;
 }
 
-.os.on {
+.neixin.on {
   opacity: 1;
   transform: translateY(0);
 }
 
-.os-tag {
+/* 四角 L 形装饰线（绝对定位的小 span，画框感） */
+.neixin .cnr {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border: 0 solid rgba(255, 208, 138, 0.65);
+  pointer-events: none;
+}
+
+.neixin .cnr.tl {
+  top: 4px;
+  left: 4px;
+  border-top-width: 1px;
+  border-left-width: 1px;
+  border-top-left-radius: 4px;
+}
+
+.neixin .cnr.tr {
+  top: 4px;
+  right: 4px;
+  border-top-width: 1px;
+  border-right-width: 1px;
+  border-top-right-radius: 4px;
+}
+
+.neixin .cnr.bl {
+  bottom: 4px;
+  left: 4px;
+  border-bottom-width: 1px;
+  border-left-width: 1px;
+  border-bottom-left-radius: 4px;
+}
+
+.neixin .cnr.br {
+  bottom: 4px;
+  right: 4px;
+  border-bottom-width: 1px;
+  border-right-width: 1px;
+  border-bottom-right-radius: 4px;
+}
+
+.neixin-tag {
   flex: none;
   font-size: 10px;
   font-style: normal;
-  letter-spacing: 0.08em;
-  padding: 1px 7px;
+  letter-spacing: 0.34em;
+  padding: 2px 8px 2px 10px;
   border-radius: 999px;
-  background: rgba(255, 208, 138, 0.18);
-  border: 1px solid rgba(255, 208, 138, 0.4);
+  background: rgba(255, 208, 138, 0.12);
+  border: 1px solid rgba(255, 208, 138, 0.35);
   color: #ffd98a;
+  transition: font-size 0.6s cubic-bezier(0.22, 1, 0.36, 1), padding 0.6s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.os-txt {
-  font-size: 13px;
-  line-height: 1.6;
+.neixin-txt {
+  font-family: Georgia, 'Times New Roman', 'Songti SC', 'SimSun', serif;
+  font-size: 13.5px;
+  line-height: 1.75;
   font-style: italic;
+  letter-spacing: 0.03em;
+  color: #f2d7a4;
+  transition: font-size 0.6s cubic-bezier(0.22, 1, 0.36, 1), line-height 0.6s cubic-bezier(0.22, 1, 0.36, 1), color 0.6s var(--ease);
 }
 
-/* 大字模式：开场等关键节拍，像标语一样压过去 */
-.os.big {
-  padding: 12px 16px;
-  background: rgba(30, 23, 15, 0.94);
-  border-style: solid;
-  border-color: rgba(255, 208, 138, 0.75);
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+/* 大字时刻：不是"跳变"，是缓慢的呼吸——字大一点、留白多一点、有一层轻光在慢慢明灭 */
+.neixin.big {
+  padding: 13px 18px;
+  background: rgba(26, 19, 13, 0.92);
+  border-color: rgba(255, 208, 138, 0.5);
+  box-shadow: 0 10px 44px rgba(0, 0, 0, 0.5);
+  animation: neixinBreathe 2.6s ease-in-out infinite;
 }
 
-.os.big .os-txt {
-  font-size: 19px;
-  line-height: 1.5;
-  font-weight: 600;
-  letter-spacing: 0.02em;
+.neixin.big .neixin-txt {
+  font-size: 18.5px;
+  line-height: 1.6;
+  color: #ffe9bf;
+  text-shadow: 0 0 18px rgba(255, 208, 138, 0.25);
 }
 
-.os.big .os-tag {
+.neixin.big .neixin-tag {
   font-size: 11px;
+  padding: 3px 10px 3px 12px;
+}
+
+@keyframes neixinBreathe {
+  0%,
+  100% {
+    box-shadow: 0 10px 44px rgba(0, 0, 0, 0.5);
+  }
+  50% {
+    box-shadow: 0 10px 52px rgba(255, 208, 138, 0.16);
+  }
 }
 
 /* 微信里的系统提示（好友验证通过那种居中灰字） */
@@ -2316,20 +2384,78 @@ body {
   background: rgba(255, 255, 255, 0.09);
 }
 
+/* 对话气泡：视觉小说式的"精美卡片"——暖色渐变底 + 1px 细边（低透明度）
+   + 画出来的角花 + 软影 + 衬线字。她的（象牙/玫瑰金）和我的（鼠尾草/橄榄金）
+   各一套，角花是 public/ui/flourish-*.png（画图 API 生成后裁的角部）。 */
 .wx-bub {
+  position: relative;
   max-width: 68%;
-  padding: 8px 11px;
-  border-radius: 5px;
-  font-size: 13px;
-  line-height: 1.55;
-  background: rgba(255, 255, 255, 0.09);
-  color: #eaf0f4;
+  padding: 12px 14px 10px;
+  border-radius: 12px;
+  font-size: 13.5px;
+  line-height: 1.7;
+  font-family: Georgia, 'Times New Roman', 'Songti SC', 'SimSun', serif;
+  letter-spacing: 0.02em;
   word-break: break-word;
+  background:
+    url('/ui/flourish-her-tl.png') left top / 48px no-repeat,
+    url('/ui/flourish-her-tr.png') right top / 48px no-repeat,
+    linear-gradient(180deg, rgba(253, 246, 236, 0.97), rgba(248, 236, 217, 0.97));
+  border: 1px solid rgba(193, 143, 92, 0.5);
+  box-shadow:
+    0 3px 14px rgba(58, 34, 14, 0.14),
+    inset 0 0 14px rgba(255, 236, 202, 0.4);
+  color: #4a3524;
 }
 
 .wx-line.mine .wx-bub {
-  background: #5d9a52;
-  color: #f6fff3;
+  background:
+    url('/ui/flourish-me-tl.png') left top / 48px no-repeat,
+    url('/ui/flourish-me-tr.png') right top / 48px no-repeat,
+    linear-gradient(180deg, rgba(242, 248, 236, 0.97), rgba(230, 242, 216, 0.97));
+  border-color: rgba(150, 165, 105, 0.55);
+  box-shadow:
+    0 3px 14px rgba(30, 45, 20, 0.12),
+    inset 0 0 14px rgba(240, 250, 225, 0.45);
+  color: #3d4a33;
+}
+
+/* 最新一条的入场：气泡轻轻落定 + 文字逐字浮出（动漫对话的节奏） */
+.wx-line.fresh {
+  animation: lineIn 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes lineIn {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.wx-line.fresh .wx-bub .ch {
+  display: inline-block;
+  animation: chIn 0.32s ease both;
+}
+
+@keyframes chIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 系统提示（好友验证那种灰字）保持不参与动效 */
+.wx-line .wx-sys,
+.wx-sys {
+  animation: none;
 }
 
 /* 图片消息：不是文字气泡，是一张可点开的缩略图（微信里图片就是一条记录） */
